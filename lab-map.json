@@ -1,0 +1,584 @@
+{
+  "eng-leaf-1": {
+    "node_details": {
+      "ip": "172.16.11.41",
+      "platform": "cisco_ios"
+    },
+    "peers": {
+      "eng-spine-1": {
+        "ip": "172.16.2.2",
+        "platform": "arista_eos",
+        "connections": [
+          [
+            "Gi0/0",
+            "Eth3"
+          ],
+          [
+            "Gi0/0",
+            "To eng-leaf-1"
+          ]
+        ]
+      },
+      "eng-spine-2": {
+        "ip": "172.16.2.6",
+        "platform": "arista_eos",
+        "connections": [
+          [
+            "Gi0/1",
+            "Eth5"
+          ],
+          [
+            "Gi0/1",
+            "To eng-leaf-1"
+          ]
+        ]
+      }
+    }
+  },
+  "eng-leaf-2": {
+    "node_details": {
+      "ip": "172.16.11.42",
+      "platform": "cisco_ios"
+    },
+    "peers": {
+      "eng-spine-1": {
+        "ip": "172.16.2.2",
+        "platform": "arista_eos",
+        "connections": [
+          [
+            "Gi0/0",
+            "Eth4"
+          ],
+          [
+            "Gi0/0",
+            "To eng-leaf-2"
+          ]
+        ]
+      },
+      "eng-spine-2": {
+        "ip": "172.16.2.6",
+        "platform": "arista_eos",
+        "connections": [
+          [
+            "Gi0/1",
+            "Eth4"
+          ],
+          [
+            "Gi0/1",
+            "To eng-leaf-2"
+          ]
+        ]
+      }
+    }
+  },
+  "eng-leaf-3": {
+    "node_details": {
+      "ip": "172.16.11.43",
+      "platform": "cisco_ios"
+    },
+    "peers": {
+      "eng-spine-1": {
+        "ip": "172.16.2.2",
+        "platform": "arista_eos",
+        "connections": [
+          [
+            "Gi0/0",
+            "Eth5"
+          ],
+          [
+            "Gi0/0",
+            "To eng-leaf-3"
+          ]
+        ]
+      },
+      "eng-spine-2": {
+        "ip": "172.16.2.6",
+        "platform": "arista_eos",
+        "connections": [
+          [
+            "Gi0/1",
+            "Eth3"
+          ],
+          [
+            "Gi0/1",
+            "To eng-leaf-3"
+          ]
+        ]
+      }
+    }
+  },
+  "eng-rtr-1": {
+    "node_details": {
+      "ip": "172.16.128.2",
+      "platform": "cisco_ios"
+    },
+    "peers": {
+      "eng-spine-1": {
+        "ip": "172.16.2.2",
+        "platform": "arista_eos",
+        "connections": [
+          [
+            "Gi0/2",
+            "Eth1"
+          ],
+          [
+            "Gi0/2",
+            "To eng-rtr-1"
+          ]
+        ]
+      },
+      "eng-spine-2": {
+        "ip": "172.16.2.6",
+        "platform": "arista_eos",
+        "connections": [
+          [
+            "Gi0/3",
+            "Eth1"
+          ],
+          [
+            "Gi0/3",
+            "To eng-rtr-1"
+          ]
+        ]
+      },
+      "usa-rtr-1": {
+        "ip": "172.16.128.5",
+        "platform": "cisco_ios",
+        "connections": [
+          [
+            "Gi0/0",
+            "Gi0/3"
+          ]
+        ]
+      },
+      "wan-core-1": {
+        "ip": "172.16.128.1",
+        "platform": "Cisco 7206VXR",
+        "connections": [
+          [
+            "Gi0/1",
+            "Eth1/2"
+          ]
+        ]
+      }
+    }
+  },
+  "eng-spine-1": {
+    "node_details": {
+      "ip": "172.16.2.2",
+      "platform": "arista_eos"
+    },
+    "peers": {
+      "eng-leaf-1": {
+        "ip": "172.16.11.41",
+        "platform": "cisco_ios",
+        "connections": [
+          [
+            "Eth3",
+            "Gi0/0"
+          ]
+        ]
+      },
+      "eng-leaf-2": {
+        "ip": "172.16.11.42",
+        "platform": "cisco_ios",
+        "connections": [
+          [
+            "Eth4",
+            "Gi0/0"
+          ]
+        ]
+      },
+      "eng-leaf-3": {
+        "ip": "172.16.11.43",
+        "platform": "cisco_ios",
+        "connections": [
+          [
+            "Eth5",
+            "Gi0/0"
+          ]
+        ]
+      },
+      "eng-rtr-1": {
+        "ip": "172.16.2.1",
+        "platform": "cisco_ios",
+        "connections": [
+          [
+            "Eth1",
+            "Gi0/2"
+          ]
+        ]
+      },
+      "eng-spine-2": {
+        "ip": "172.16.2.6",
+        "platform": "arista_eos",
+        "connections": [
+          [
+            "Eth2",
+            "Eth2"
+          ]
+        ]
+      }
+    }
+  },
+  "eng-spine-2": {
+    "node_details": {
+      "ip": "172.16.2.6",
+      "platform": "arista_eos"
+    },
+    "peers": {
+      "eng-leaf-1": {
+        "ip": "172.16.11.41",
+        "platform": "cisco_ios",
+        "connections": [
+          [
+            "Eth5",
+            "Gi0/1"
+          ]
+        ]
+      },
+      "eng-leaf-2": {
+        "ip": "172.16.11.42",
+        "platform": "cisco_ios",
+        "connections": [
+          [
+            "Eth4",
+            "Gi0/1"
+          ]
+        ]
+      },
+      "eng-leaf-3": {
+        "ip": "172.16.11.43",
+        "platform": "cisco_ios",
+        "connections": [
+          [
+            "Eth3",
+            "Gi0/1"
+          ]
+        ]
+      },
+      "eng-rtr-1": {
+        "ip": "172.16.2.5",
+        "platform": "cisco_ios",
+        "connections": [
+          [
+            "Eth1",
+            "Gi0/3"
+          ]
+        ]
+      },
+      "eng-spine-1": {
+        "ip": "172.16.2.2",
+        "platform": "arista_eos",
+        "connections": [
+          [
+            "Eth2",
+            "Eth2"
+          ]
+        ]
+      }
+    }
+  },
+  "usa-leaf-1": {
+    "node_details": {
+      "ip": "172.16.10.21",
+      "platform": "cisco_ios"
+    },
+    "peers": {
+      "usa-spine-1": {
+        "ip": "172.16.10.2",
+        "platform": "arista_eos",
+        "connections": [
+          [
+            "Gi0/1",
+            "Eth3"
+          ],
+          [
+            "Gi0/1",
+            "To usa-leaf-1"
+          ]
+        ]
+      },
+      "usa-spine-2": {
+        "ip": "172.16.1.6",
+        "platform": "arista_eos",
+        "connections": [
+          [
+            "Gi0/0",
+            "Eth5"
+          ],
+          [
+            "Gi0/0",
+            "To usa-leaf-1"
+          ]
+        ]
+      }
+    }
+  },
+  "usa-leaf-2": {
+    "node_details": {
+      "ip": "172.16.10.22",
+      "platform": "cisco_ios"
+    },
+    "peers": {
+      "usa-spine-1": {
+        "ip": "172.16.10.2",
+        "platform": "arista_eos",
+        "connections": [
+          [
+            "Gi0/1",
+            "Eth4"
+          ],
+          [
+            "Gi0/1",
+            "To usa-leaf-2"
+          ]
+        ]
+      },
+      "usa-spine-2": {
+        "ip": "172.16.1.6",
+        "platform": "arista_eos",
+        "connections": [
+          [
+            "Gi0/0",
+            "Eth4"
+          ],
+          [
+            "Gi0/0",
+            "To usa-leaf-2"
+          ]
+        ]
+      }
+    }
+  },
+  "usa-leaf-3": {
+    "node_details": {
+      "ip": "172.16.10.23",
+      "platform": "cisco_ios"
+    },
+    "peers": {
+      "usa-spine-1": {
+        "ip": "172.16.10.2",
+        "platform": "arista_eos",
+        "connections": [
+          [
+            "Gi0/1",
+            "Eth5"
+          ],
+          [
+            "Gi0/1",
+            "To usa-leaf-3"
+          ]
+        ]
+      },
+      "usa-spine-2": {
+        "ip": "172.16.1.6",
+        "platform": "arista_eos",
+        "connections": [
+          [
+            "Gi0/0",
+            "Eth3"
+          ],
+          [
+            "Gi0/0",
+            "To usa-leaf-3"
+          ]
+        ]
+      }
+    }
+  },
+  "usa-rtr-1": {
+    "node_details": {
+      "ip": "172.16.100.2",
+      "platform": "cisco_ios"
+    },
+    "peers": {
+      "eng-rtr-1": {
+        "ip": "172.16.128.6",
+        "platform": "cisco_ios",
+        "connections": [
+          [
+            "Gi0/3",
+            "Gi0/0"
+          ]
+        ]
+      },
+      "usa-spine-2": {
+        "ip": "172.16.1.6",
+        "platform": "arista_eos",
+        "connections": [
+          [
+            "Gi0/1",
+            "Eth6"
+          ],
+          [
+            "Gi0/2",
+            "Eth1"
+          ],
+          [
+            "Gi0/2",
+            "To usa-rtr-1"
+          ]
+        ]
+      },
+      "wan-core-1": {
+        "ip": "172.16.100.1",
+        "platform": "Cisco 7206VXR",
+        "connections": [
+          [
+            "Gi0/0",
+            "Eth1/1"
+          ]
+        ]
+      }
+    }
+  },
+  "usa-spine-1": {
+    "node_details": {
+      "ip": "172.16.10.2",
+      "platform": "arista_eos"
+    },
+    "peers": {
+      "route-server": {
+        "ip": "",
+        "platform": "juniper_junos",
+        "connections": [
+          [
+            "Eth7",
+            "513"
+          ]
+        ]
+      },
+      "usa-leaf-1": {
+        "ip": "172.16.10.21",
+        "platform": "cisco_ios",
+        "connections": [
+          [
+            "Eth3",
+            "Gi0/1"
+          ]
+        ]
+      },
+      "usa-leaf-2": {
+        "ip": "172.16.10.22",
+        "platform": "cisco_ios",
+        "connections": [
+          [
+            "Eth4",
+            "Gi0/1"
+          ]
+        ]
+      },
+      "usa-leaf-3": {
+        "ip": "172.16.10.23",
+        "platform": "cisco_ios",
+        "connections": [
+          [
+            "Eth5",
+            "Gi0/1"
+          ]
+        ]
+      },
+      "usa-spine-2": {
+        "ip": "172.16.1.6",
+        "platform": "arista_eos",
+        "connections": [
+          [
+            "Eth2",
+            "Eth2"
+          ]
+        ]
+      }
+    }
+  },
+  "usa-spine-2": {
+    "node_details": {
+      "ip": "172.16.1.6",
+      "platform": "arista_eos"
+    },
+    "peers": {
+      "usa-leaf-1": {
+        "ip": "172.16.10.21",
+        "platform": "cisco_ios",
+        "connections": [
+          [
+            "Eth5",
+            "Gi0/0"
+          ]
+        ]
+      },
+      "usa-leaf-2": {
+        "ip": "172.16.10.22",
+        "platform": "cisco_ios",
+        "connections": [
+          [
+            "Eth4",
+            "Gi0/0"
+          ]
+        ]
+      },
+      "usa-leaf-3": {
+        "ip": "172.16.10.23",
+        "platform": "cisco_ios",
+        "connections": [
+          [
+            "Eth3",
+            "Gi0/0"
+          ]
+        ]
+      },
+      "usa-rtr-1": {
+        "ip": "172.16.0.1",
+        "platform": "cisco_ios",
+        "connections": [
+          [
+            "Eth1",
+            "Gi0/2"
+          ],
+          [
+            "Eth6",
+            "Gi0/1"
+          ]
+        ]
+      },
+      "usa-spine-1": {
+        "ip": "172.16.10.2",
+        "platform": "arista_eos",
+        "connections": [
+          [
+            "Eth2",
+            "Eth2"
+          ]
+        ]
+      }
+    }
+  },
+  "wan-core-1": {
+    "node_details": {
+      "ip": "172.16.1.2",
+      "platform": "cisco_ios"
+    },
+    "peers": {
+      "eng-rtr-1": {
+        "ip": "172.16.128.2",
+        "platform": "Cisco",
+        "connections": [
+          [
+            "Eth1/2",
+            "Gi0/1"
+          ]
+        ]
+      },
+      "usa-rtr-1": {
+        "ip": "172.16.100.2",
+        "platform": "Cisco",
+        "connections": [
+          [
+            "Eth1/1",
+            "Gi0/0"
+          ]
+        ]
+      }
+    }
+  }
+}

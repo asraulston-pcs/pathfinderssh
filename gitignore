@@ -1,0 +1,68 @@
+# Build output.
+#
+# The repo was rebuilt clean once already to purge committed binaries. The
+# front ends are 5-35 MB each and a bare `git add .` puts every one of them
+# back, so the binary names are listed explicitly as well as bin/.
+bin/
+/capture
+/captureui
+/crawl
+/crawlui
+/mapview
+/pathfinder
+/pfconnect
+/pfterm
+/pfvault
+/reach
+/reachmaps
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Coverage and profiling.
+coverage.out
+coverage.html
+*.prof
+covdata/
+
+# Local toolchain scratch. floor.local carries container-absolute replace
+# paths and must never ship; go.work overrides the module graph.
+scripts/floor.local
+go.work
+go.work.sum
+vendor/
+
+# Run artifacts. Crawl maps, capture stores and saved runs all carry real
+# device names when they come off a real network, which is exactly what must
+# not land in the repo. lab-map.json is the one committed fixture and is
+# re-added below.
+*-map.json
+*.graphml
+maps/
+pf_maps/
+captures/
+runs/
+!lab-map.json
+
+# Credentials. Never committed under any circumstances: the vault is
+# encrypted but the bindings file names devices, and known_hosts names hosts.
+vault.json
+*.vault.json
+*.bindings.json
+known_hosts
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# Editor and OS noise.
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~

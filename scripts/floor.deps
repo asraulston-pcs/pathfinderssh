@@ -1,0 +1,14 @@
+# Oldest supported dependency set. One "module version" per line; "go" sets the
+# language directive. ./test.sh -F rebuilds and retests against these in a
+# throwaway copy, so the working tree keeps the versions it ships with.
+go 1.22
+golang.org/x/crypto v0.31.0
+golang.org/x/sys v0.28.0
+golang.org/x/term v0.27.0
+github.com/sirikothe/gotextfsm v1.1.0
+github.com/google/uuid v1.6.0
+gopkg.in/yaml.v3 v3.0.1
+go.bug.st/serial v1.6.4
+github.com/creack/goselect v0.1.2
+github.com/mattn/go-runewidth v0.0.16
+github.com/rivo/uniseg v0.2.0

@@ -1,0 +1,8 @@
+mkdir -p bin
+go build -o bin/crawl   ./cmd/crawl
+go build -o bin/reach   ./cmd/reach
+go build -o bin/pfvault ./cmd/pfvault
+go build -o bin/pfterm  ./cmd/pfterm  
+go build -o bin/capture ./cmd/capture
+go build -o bin/captureui ./cmd/captureui
+go build -o bin/pathfinder ./cmd/pathfinder && ./bin/pathfinder
