@@ -192,6 +192,18 @@ type NativeTerminalWidget struct {
 	// truecolor full-screen) backs up the main-thread queue and starves input.
 	redrawing atomic.Bool
 
+	// redrawStarted is the UnixNano at which the in-flight paint was
+	// dispatched, and it is the escape hatch that makes the guard safe to
+	// hold. A guard released only by its own closure is permanent if that
+	// closure never runs -- a queue drained during teardown, a render that
+	// panics somewhere the recover does not cover -- and the symptom is a
+	// terminal that stops painting for good. That is what the guard was
+	// disabled to investigate. Now a paint that has been in flight longer
+	// than redrawStaleAfter is treated as lost and a fresh one is allowed,
+	// so the worst case degrades to the unguarded behaviour for one tick
+	// instead of wedging the widget.
+	redrawStarted atomic.Int64
+
 	// Per-terminal terminal-theme scope (see cli/terminal_theme_scope.go). The
 	// zero value inherits the global Settings -> Terminal Theme, so every
 	// existing NativeTerminalWidget{...} literal keeps working unchanged.
@@ -852,19 +864,24 @@ func (r *unifiedTerminalRenderer) Destroy() {
 // and the backlog compounds to unresponsive. fyne.Do already marshals onto the
 // main thread, so the previous goroutine wrapper only hid that growth.
 func (t *NativeTerminalWidget) performRedrawUnified() bool {
-	// DIAGNOSTIC BISECT: the in-flight guard (t.redrawing CAS) is intentionally
-	// disabled so every tick dispatches a paint. This isolates whether the guard
-	// was wedging the alt->main transition on btop's q-exit:
-	//   - q now returns to the shell, no RENDER PANIC logged -> the guard was
-	//     stuck; reinstate it with the defer-release version.
-	//   - q still frozen + RENDER PANIC logged -> the alt->main render crashes;
-	//     the log line names the failure (likely an index range in switchToMain
-	//     or renderNormalModeUnified).
-	//   - q still frozen + no panic -> the exit sequence isn't triggering a
-	//     redraw at all; look upstream at the feed/updatePending path.
+	// The guard was disabled by a DIAGNOSTIC BISECT that asked whether it was
+	// wedging the alt->main transition on btop's q-exit. It is reinstated here
+	// in the defer-release form the bisect note called for, plus the stale
+	// release described on redrawStarted -- which answers the bisect's own
+	// worst case directly: even if a paint is lost, the widget recovers on the
+	// next tick instead of never painting again.
+	if !t.claimRedraw() {
+		return false
+	}
+
 	f := t.snapshotFrame()
 
 	fyne.Do(func() {
+		// Registered FIRST so it runs LAST: the recover below stops the
+		// panic, and the guard is released after that, so a crashing render
+		// cannot leave the widget permanently unpaintable.
+		defer t.redrawing.Store(false)
+
 		// Log (but don't swallow the consequences of) a render panic, so a
 		// crashing alt->main transition is visible instead of silent.
 		defer func() {
@@ -882,6 +899,36 @@ func (t *NativeTerminalWidget) performRedrawUnified() bool {
 			t.renderNormalModeUnified(f, true)
 		}
 	})
+	return true
+}
+
+// redrawStaleAfter is how long a dispatched paint may be in flight before the
+// guard assumes it was lost and lets another through. It is deliberately much
+// larger than the tick interval: the point is to bound a permanent wedge, not
+// to second-guess a slow frame. A frame that legitimately takes this long has
+// a different problem.
+const redrawStaleAfter = 2 * time.Second
+
+// claimRedraw takes the in-flight guard, or reclaims it from a paint that was
+// dispatched long enough ago to be considered lost. It reports whether the
+// caller may dispatch.
+func (t *NativeTerminalWidget) claimRedraw() bool {
+	if t.redrawing.CompareAndSwap(false, true) {
+		t.redrawStarted.Store(time.Now().UnixNano())
+		return true
+	}
+
+	started := t.redrawStarted.Load()
+	if started == 0 || time.Since(time.Unix(0, started)) < redrawStaleAfter {
+		return false
+	}
+
+	// Reclaim. The lost paint's own release may still land later and clear a
+	// flag this dispatch owns; the cost of that is one extra paint, which is
+	// the behaviour with no guard at all and is why it is not worth a
+	// generation counter.
+	dlogf("performRedrawUnified: reclaiming a paint in flight for %s", time.Since(time.Unix(0, started)))
+	t.redrawStarted.Store(time.Now().UnixNano())
 	return true
 }
 

@@ -42,6 +42,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -147,7 +148,7 @@ func main() {
 	}
 	h.node = sessions.Defaults()
 
-	h.shell.AddLauncher("Terminal", theme.ComputerIcon(), func() { h.launchTerminal(h.node) })
+	h.shell.AddLauncher("Quick Connect", theme.ComputerIcon(), func() { h.launchTerminal(h.node) })
 	h.shell.AddLauncher("Crawl", theme.SearchIcon(), h.launchCrawl)
 	h.shell.AddLauncher("Capture", theme.DownloadIcon(), h.launchCapture)
 	h.shell.AddLauncher("Map", theme.GridIcon(), h.launchMap)
@@ -762,8 +763,30 @@ func (h *host) exportSessions() {
 }
 
 func (h *host) connect(n sessions.Node) {
-	progress := dialog.NewCustomWithoutButtons("Connecting",
+	// The ctx is created HERE, not inside the dial goroutine, because the
+	// Cancel button has to be able to reach it. The 90s ceiling stays as the
+	// unattended bound; Cancel is the attended one.
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+
+	// Fyne's dialog.Hide() runs the onClosed callback too, so the Cancel
+	// button and the success path both arrive here. One CAS decides which of
+	// them got there first, and the loser does nothing: without it, hiding
+	// the dialog on success would cancel the context it just finished with
+	// and log a cancellation that never happened.
+	var settled atomic.Bool
+
+	progress := dialog.NewCustom("Connecting", "Cancel",
 		widget.NewLabel("Connecting to "+n.Target()+" …"), h.win)
+	// A dial that cannot be escaped is worse than a slow one: until this
+	// existed, a serial open that parked in the driver left a modal over the
+	// whole window and the only exit was killing the process. Hot-plugging an
+	// adapter on a crash cart is enough to produce that.
+	progress.SetOnClosed(func() {
+		if settled.CompareAndSwap(false, true) {
+			log.Printf("[dial] cancelled by operator: %s", n.Target())
+			cancel()
+		}
+	})
 	progress.Show()
 
 	opts := sessiondial.Options{
@@ -780,11 +803,18 @@ func (h *host) connect(n sessions.Node) {
 	// prompt waiting on a click, must not freeze the window -- and the
 	// prompt cannot be answered by a frozen one.
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
 
 		tp, err := sessiondial.Connect(ctx, n, opts)
 		fyne.Do(func() {
+			if !settled.CompareAndSwap(false, true) {
+				// The operator cancelled and has moved on. Connect closes
+				// an abandoned transport itself, so there is nothing to
+				// clean up here and nothing to report -- raising an error
+				// dialog now would hand them back their own decision as a
+				// fault.
+				return
+			}
 			progress.Hide()
 			if err != nil {
 				log.Printf("[dial] %v", err)

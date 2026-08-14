@@ -112,11 +112,26 @@ func (o Options) resolve(host string) string {
 // Connect dials the node and returns a live transport, ready to hand to a
 // terminal.
 //
-// The context bounds the work this package controls. sshcore.Dial does not
-// take one, so a cancellation that arrives while a TCP connect or key exchange
-// is already in flight is not honoured until that dial reaches its own
-// timeout — the same gap the crawler's stop path has, and it has the same fix
-// (net.Dialer.DialContext inside sshcore) whenever it becomes worth doing.
+// The context bounds the wait, not the dial. None of the three transports can
+// be interrupted mid-open: sshcore.Dial takes no ctx, telnetx dials with its
+// own timeout, and a serial open is a syscall — on Linux, opening a USB
+// adapter that was hot-plugged into a half-enumerated port can park in the
+// driver indefinitely, which is a crash-cart-shaped failure, not a hypothetical.
+//
+// So Connect runs the dial on its own goroutine and returns as soon as either
+// the dial finishes or ctx ends. What it must not do is walk away and leave
+// the result unowned: an abandoned dial that eventually succeeds holds an SSH
+// connection, a socket or an exclusive serial port that nothing will ever
+// close, and on serial that means the port stays locked until the process
+// exits — so the next attempt fails with "device busy" and the operator blames
+// the retry. The abandoning goroutine therefore stays alive solely to close
+// whatever arrives.
+//
+// The honest limit: this bounds the CALLER, not the work. The stuck open is
+// still stuck, still holding an OS thread, and a second attempt at the same
+// dead port will hang the same way. It buys back the window, the Cancel
+// button, and the ability to try something else — which is the whole of what
+// was missing.
 func Connect(ctx context.Context, n sessions.Node, o Options) (term.Transport, error) {
 	n = n.Normalize()
 	// A store may hold a default for a session that names no credential, so
@@ -129,6 +144,38 @@ func Connect(ctx context.Context, n sessions.Node, o Options) (term.Transport, e
 		return nil, err
 	}
 
+	type result struct {
+		tp  term.Transport
+		err error
+	}
+	// Buffered: the dial goroutine must never block on a send nobody is
+	// waiting for, or abandoning a dial would leak the goroutine as well as
+	// the transport.
+	done := make(chan result, 1)
+
+	go func() {
+		tp, err := dial(ctx, n, o)
+		done <- result{tp, err}
+	}()
+
+	select {
+	case r := <-done:
+		return r.tp, r.err
+	case <-ctx.Done():
+		go func() {
+			r := <-done
+			if r.tp != nil {
+				o.logf("[dial] abandoned dial to %s completed; closing it", n.Target())
+				_ = r.tp.Close()
+			}
+		}()
+		return nil, fmt.Errorf("connect %s: %w", n.Target(), ctx.Err())
+	}
+}
+
+// dial is the three-way transport switch, and it exists exactly once. The node
+// arrives already normalized and validated by Connect.
+func dial(ctx context.Context, n sessions.Node, o Options) (term.Transport, error) {
 	switch n.Transport {
 	case sessions.TransportSerial:
 		return connectSerial(n, o)

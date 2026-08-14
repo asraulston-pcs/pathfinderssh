@@ -1,5 +1,8 @@
 # PathfinderSSH — User Guide
 
+<p align="center">
+  <img src="screenshots/pflogo.png" width="49%">
+</p>
 This is the same documentation the application ships in **Help → Contents**,
 as one page. The in-app copy is rendered from
 [`internal/help/content/`](internal/help/content) into a self-contained HTML
