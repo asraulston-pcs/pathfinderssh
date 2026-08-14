@@ -34,7 +34,7 @@ covdata/
 scripts/floor.local
 go.work
 go.work.sum
-vendor/
+/vendor/
 
 # Run artifacts. Crawl maps, capture stores and saved runs all carry real
 # device names when they come off a real network, which is exactly what must
