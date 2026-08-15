@@ -48,6 +48,13 @@ Minimum 8 characters. The master password is never written anywhere — Argon2id
 derives the AES-256 key from it at unlock, and a wrong password is detected by
 GCM authentication failure rather than by a stored hash.
 
+`pfvault init` is not the only route: `cmd/pathfinder` offers to create a vault
+on first run when none exists, and its Vault menu offers again whenever the file
+is missing. Declining is a legitimate answer — a session can carry its own
+credentials, and a crawl or capture accepts a static username and password from
+its launch form. What a vault buys is unattended work, where each device is
+resolved against stored credentials instead of one password typed by hand.
+
 ### Add credentials
 
 Two credentials make a ladder: a key tried first, a password as fallback.
@@ -77,6 +84,43 @@ echo "$PW" | ./pfvault add -name lab-pw -user admin -tag lab -priority 20
 ```
 
 Prints NAME, USER, AUTH, PRIO, TAGS, SCOPE, STATE. Never secrets.
+
+### A default credential
+
+A session that names no credential asks the vault what it uses when nothing is
+named. That is the answer to "I have a hundred sessions and I do not want to
+edit each one" — particularly after a map import, where every node arrives with
+no credential at all.
+
+```sh
+./pfvault default lab-key    # set it
+./pfvault default            # report it — the bare form never changes anything
+./pfvault default -clear     # back to no default
+```
+
+`add -default` does both in one step. `list` marks the default in STATE.
+
+Two rules decide when it applies, and both are deliberate:
+
+**The default fills a session that states no auth of its own, and stays out of
+one that does.** Any of a username, a password or a key path counts as stating
+its own. It is all-or-nothing, never field-by-field: merging would produce a
+username from one place and a password from another, a credential nobody
+assembled and nobody can debug from the screen. This is also the way back —
+**typing a username is how a session opts out.**
+
+**A credential named on the session still wins.** Naming one is a choice; the
+default is what happens in the absence of a choice, so it loses to anything the
+session says.
+
+The default applies to the session credential only, never to a jump host.
+Silently authenticating to somebody's bastion with the estate default is a
+decision nobody made.
+
+A disabled credential is skipped, and `default` refuses to set one — disabled
+means out of automatic selection, and being the default is the most automatic
+there is. It stays fetchable by name, which is what disable is meant to leave
+working.
 
 ### Optional scoping
 

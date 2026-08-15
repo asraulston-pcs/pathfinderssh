@@ -98,6 +98,7 @@ candidates without a second store:
 | `Scope`       | Eligibility: domain suffix, CIDRs, platforms.                   |
 | `Description` | Free text for a picker UI. Never parsed.                        |
 | `Disabled`    | Out of automatic selection without being deleted.               |
+| `IsDefault`   | What an empty credential reference resolves to. At most one.    |
 
 `Scope` deserves a note. A zero scope is unrestricted. A populated scope must
 match on **every** populated field, and `Scope.Specificity()` scores how narrow
@@ -109,6 +110,50 @@ priority breaks ties within a specificity band.
 That ordering is deliberate. A credential scoped to one rack should be tried
 before a fabric-wide fallback regardless of what numbers someone typed into the
 priority fields, because the narrower statement is the more informed one.
+
+### The default credential
+
+`SetDefault` / `Default()` / `ClearDefault()` / `DefaultName()` answer one
+question: what does a session mean when it names no credential at all? Without
+an answer, an estate imported from a map is a hundred nodes each needing the
+same edit.
+
+An empty `Node.Credential` **asks the store what it uses when nothing is
+named**, and the blank stays blank in the session file. Writing the resolved
+name into each node would turn changing the estate's credential back into an
+edit per device, which is the problem the default exists to remove.
+
+Three rules, each of which had a reason:
+
+- **All-or-nothing.** The default fills a session that states no auth of its own
+  — no username, no password, no key path — and stays out of one that does.
+  Merging field by field yields a credential nobody assembled. It is also the
+  only route back to manual auth: typing a username is how a session opts out.
+- **A named credential outranks it.** Naming one is a choice. The default is
+  what happens without a choice.
+- **Session only, never the jump host.** `resolveWithDefault` is used for the
+  node and plain `resolve` for the bastion, because authenticating to somebody's
+  jump host with the estate default is a decision nobody made.
+
+`Default()` skips a disabled credential — disabled means out of automatic
+selection, and nothing is more automatic than being the default. It stays
+reachable by `Get`, which is what disable is meant to leave working.
+
+`AuthType` **cannot** be used to detect "the session said nothing." `Normalize()`
+fills an empty one with `agent`, so a deliberate agent choice and an unset field
+are the same value by the time anything reads them, and every map-imported node
+carries `agent`.
+
+One consequence reached further than expected. `Node.Validate()` decides the
+"username required unless a vault credential supplies one" rule on
+`Credential != ""`, so an imported node — no username, no credential — was
+rejected before the default was ever consulted. Hence
+`ValidateFor(credentialDefault bool)` / `ErrFor(bool)`, with `Validate()` and
+`Err()` delegating with `false` so nothing else changes. The same flag defers the
+public-key `key_path` rule, since a default can supply a key path exactly as it
+supplies a username. A post-lookup check in `connectSSH` then catches the real
+gap where the answer is finally known: *no username: the session names none, and
+no credential supplied one.*
 
 ---
 
@@ -361,6 +406,9 @@ pfvault init
 pfvault add -name lab-key -user admin -key ~/.ssh/id_ed25519 -tag lab -priority 10
 pfvault add -name lab-pw  -user admin -tag lab -priority 20
 pfvault list
+pfvault default lab-key  # what an empty credential reference resolves to
+pfvault default          # bare form REPORTS; it never changes anything
+pfvault default -clear
 pfvault keyring set      # store the master password, so a crawl needs no human
 pfvault keyring status   # what the unlock path would find
 pfvault keyring clear
@@ -375,6 +423,11 @@ when piped, so scripted use is `echo "$PW" | pfvault add ...` and never
 `add` collects only the material the declared auth type will actually use,
 matching how the dialer applies it. Storing a password on a publickey
 credential means carrying a secret nothing ever reads.
+
+`default` with no argument **reports** rather than clearing. A command whose
+bare form is destructive is one typo from a bad afternoon. `-default` on `add`
+sets it at creation, and setting a disabled credential is refused with "enable
+it first."
 
 One operational note that has already caused confusion: `-cred-tag` requires a
 credential to carry **all** the tags passed. Two credentials with different tags
