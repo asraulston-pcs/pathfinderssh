@@ -199,6 +199,11 @@ func main() {
 		dialog.ShowError(settingsErr, w)
 	}
 
+	// The first-run vault warning goes here for the same reason: there has
+	// to be a window for it to appear in. It is silent on every machine
+	// that already has a vault.
+	h.offerVaultCreate()
+
 	// Immediately before ShowAndRun, like an applet's Start: the watchdog
 	// hands work to fyne.Do and needs a running driver.
 	h.shell.StartFocusWatch()
@@ -1522,7 +1527,185 @@ func (h *host) manageVault() {
 	ui.ShowVaultManager(h.win, h.vault, h.refreshVault)
 }
 
+// offerVaultCreate raises the first-run warning when this run found no vault.
+//
+// It fires only when nothing exists at the path this run resolved, so it asks
+// once in the life of a machine rather than once per launch, and "Not now" is
+// recorded so it does not come back. That restraint is deliberate: a vault is
+// not REQUIRED to use the application -- a session carries its own credentials
+// and a crawl accepts a static username and password from its launch form --
+// so this is a warning about what degrades without one, and a warning that
+// returns every launch is a warning that gets clicked through.
+//
+// The way back after declining is the Vault button, which offers creation
+// whenever the file is missing.
+func (h *host) offerVaultCreate() {
+	check := ui.VaultCheck{
+		Path:     h.vaultPath,
+		Unlocked: h.vault != nil,
+		Declined: h.base.VaultPromptDeclined,
+	}
+	if _, err := os.Stat(check.Path); err == nil {
+		check.Present = true
+	}
+	if !check.ShouldOffer() {
+		return
+	}
+
+	body := widget.NewLabel(ui.VaultSetupWarning(check.Path))
+	body.Wrapping = fyne.TextWrapWord
+
+	d := dialog.NewCustomConfirm(ui.VaultSetupTitle, "Create vault…", "Not now",
+		body, func(create bool) {
+			if !create {
+				h.declineVaultPrompt()
+				return
+			}
+			h.showCreateVaultDialog(check.Path)
+		}, h.win)
+	d.Resize(fyne.NewSize(620, 420))
+	d.Show()
+}
+
+// declineVaultPrompt records that the first-run warning was answered.
+//
+// A write failure is logged rather than raised: the answer has been honoured
+// for this run, and the whole cost of the file not being written is being asked
+// once more. An error dialog about a suppression flag, on top of the dialog it
+// suppresses, is worse than the thing it reports.
+func (h *host) declineVaultPrompt() {
+	h.base.VaultPromptDeclined = true
+	ui.SetSettings(h.base)
+	if err := ui.SaveSettings(h.settingsPath, h.base); err != nil {
+		log.Printf("[settings] could not record the vault prompt answer: %v", err)
+	}
+}
+
+// showCreateVaultDialog creates a new vault and adopts it.
+//
+// The CONFIRM field is not friction. A new master password has nothing to be
+// checked against, so a typo is unrecoverable in the worst way available: the
+// vault opens for nobody, and every credential added afterwards is encrypted to
+// a password no one knows.
+func (h *host) showCreateVaultDialog(start string) {
+	path := widget.NewEntry()
+	path.SetText(start)
+	path.SetPlaceHolder(vaultcli.DefaultPath())
+
+	state := widget.NewLabel("")
+	state.Wrapping = fyne.TextWrapWord
+	checkPath := func(p string) {
+		p = ui.ExpandHome(p)
+		if p == "" {
+			p = vaultcli.DefaultPath()
+		}
+		if _, err := os.Stat(p); err == nil {
+			state.SetText("a vault already exists there — cancel and unlock it instead")
+			return
+		}
+		state.SetText("will be created: " + p)
+	}
+	path.OnChanged = checkPath
+	checkPath(start)
+
+	pass := widget.NewPasswordEntry()
+	confirm := widget.NewPasswordEntry()
+
+	// Off by default, for the same reason as the unlock dialog: filing a
+	// master password in the OS keyring is a decision that outlives this
+	// window.
+	remember := widget.NewCheck("Remember in the OS keyring", nil)
+
+	status := widget.NewLabel("")
+	status.Wrapping = fyne.TextWrapWord
+
+	items := []*widget.FormItem{
+		widget.NewFormItem("Vault", path),
+		widget.NewFormItem("", state),
+		widget.NewFormItem("Master password", pass),
+		widget.NewFormItem("Confirm", confirm),
+		widget.NewFormItem("", remember),
+		widget.NewFormItem("", status),
+	}
+
+	// Reopened rather than rebuilt on a refused form, the way the credential
+	// editor does it: the widgets are the same objects, so what was typed
+	// survives. Making somebody retype a master password twice because they
+	// mistyped it once is how a dialog gets abandoned.
+	var show func()
+	show = func() {
+		d := dialog.NewForm("Create vault", "Create", "Cancel", items, func(ok bool) {
+			if !ok {
+				return
+			}
+			p := ui.ExpandHome(path.Text)
+			if p == "" {
+				p = vaultcli.DefaultPath()
+			}
+
+			form := ui.VaultCreateForm{Path: p, Master: pass.Text, Confirm: confirm.Text}
+			if errs := form.Validate(); len(errs) > 0 {
+				status.SetText("⚠  " + ui.ProblemText(errs))
+				show()
+				return
+			}
+
+			// Making the directory is part of honouring "create a
+			// vault here" -- the same reasoning as writeMap. 0o700
+			// because of what is about to be in it; NTFS ignores
+			// the mode, so on Windows this is the directory and
+			// nothing more.
+			if dir := filepath.Dir(p); dir != "" && dir != "." {
+				if err := os.MkdirAll(dir, 0o700); err != nil {
+					status.SetText("⚠  " + err.Error())
+					show()
+					return
+				}
+			}
+
+			v := vault.New(p)
+			if err := v.Create(pass.Text); err != nil {
+				status.SetText("⚠  " + err.Error())
+				show()
+				return
+			}
+			status.SetText("")
+			h.vaultPath = p
+			h.adopt(v)
+
+			// A vault now exists, so the first-run warning has been
+			// answered by events. Clearing the flag keeps the
+			// settings file honest rather than carrying a decline
+			// that no longer describes anything.
+			if h.base.VaultPromptDeclined {
+				h.base.VaultPromptDeclined = false
+				ui.SetSettings(h.base)
+				if err := ui.SaveSettings(h.settingsPath, h.base); err != nil {
+					log.Printf("[settings] %v", err)
+				}
+			}
+
+			if remember.Checked {
+				if err := vaultcli.KeyringSet(p, pass.Text); err != nil {
+					dialog.ShowError(fmt.Errorf("created, but the keyring refused the password: %w", err), h.win)
+				}
+			}
+			dialog.ShowInformation("Vault created", ui.VaultCreatedNote(p), h.win)
+		}, h.win)
+		d.Resize(fyne.NewSize(600, 380))
+		d.Show()
+	}
+	show()
+}
+
 // showVaultDialog is the only place a master password is ever asked for.
+//
+// Three states, and which one it is decides the question. An unlocked vault is
+// asked whether to lock; a vault file that is present is asked for its master
+// password; a path with no file behind it is offered CREATION, because on a
+// fresh machine the alternative is a closed loop -- the dialog cannot unlock a
+// file that does not exist, and until this existed the only way to make one was
+// pfvault init, which somebody who installed a GUI has no reason to have found.
 func (h *host) showVaultDialog() {
 	if h.vault != nil {
 		dialog.ShowConfirm("Vault",
@@ -1539,6 +1722,15 @@ func (h *host) showVaultDialog() {
 		return
 	}
 
+	if _, err := os.Stat(h.vaultPath); err != nil {
+		h.showCreateVaultDialog(h.vaultPath)
+		return
+	}
+	h.showUnlockVaultDialog()
+}
+
+// showUnlockVaultDialog asks for the master password of a vault that is there.
+func (h *host) showUnlockVaultDialog() {
 	// Prefill with a path that EXISTS. h.vaultPath comes from -vault, and a
 	// flag naming a file that is not there is the most likely reason
 	// someone is opening this dialog in the first place -- making them
@@ -1596,6 +1788,13 @@ func (h *host) showVaultDialog() {
 		p := ui.ExpandHome(path.Text)
 		if p == "" {
 			p = vaultcli.DefaultPath()
+		}
+		// A path typed into this field that has no file behind it is
+		// not an error to report -- the person has already said which
+		// file they mean, so the useful answer is to offer to make it.
+		if _, statErr := os.Stat(p); statErr != nil {
+			h.showCreateVaultDialog(p)
+			return
 		}
 		v, err := vaultcli.OpenWith(p, pass.Text)
 		if err != nil {

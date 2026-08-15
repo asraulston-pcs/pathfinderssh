@@ -110,6 +110,16 @@ type Settings struct {
 	AntiIdleEnabled     bool   `json:"anti_idle_enabled"`
 	AntiIdleIntervalSec int    `json:"anti_idle_interval_sec"`
 	AntiIdleKeystroke   string `json:"anti_idle_keystroke"`
+
+	// VaultPromptDeclined records that the first-run "no credential vault"
+	// warning was answered with "Not now".
+	//
+	// It is state, not a preference: it has no row in the settings dialog,
+	// and it lives here only because this is the file that already survives
+	// a restart. Zero is the meaning (never asked, or asked and accepted),
+	// so Normalized leaves it alone. Creating a vault clears it, since a
+	// decline that no longer describes anything is just a stale flag.
+	VaultPromptDeclined bool `json:"vault_prompt_declined,omitempty"`
 }
 
 // Defaults returns a usable configuration.
