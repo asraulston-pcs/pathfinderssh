@@ -191,6 +191,22 @@ func NewSessionForm(o SessionFormOptions) *SessionForm {
 // not decide where it lives.
 func (f *SessionForm) Content() fyne.CanvasObject { return f.content }
 
+// Connect performs the form's Connect action, exactly as its button does.
+//
+// It is exported so a key binding can do what the button does without
+// reaching into the form's widgets, and the button now calls it too -- two
+// code paths into "connect" is how one of them ends up missing a step.
+// A form with no Connect action does nothing, which is the right answer for
+// the edit-only case rather than an error nobody can act on.
+func (f *SessionForm) Connect() {
+	if !f.opts.ShowConnect || f.opts.OnConnect == nil {
+		return
+	}
+	if n, ok := f.Node(); ok {
+		f.opts.OnConnect(n)
+	}
+}
+
 // Node reads the form back into a node and reports whether it is usable.
 //
 // It always returns the node, valid or not: an invalid node is still the thing
@@ -508,11 +524,7 @@ func (f *SessionForm) footer() fyne.CanvasObject {
 		bar.Add(b)
 	}
 	if f.opts.ShowConnect && f.opts.OnConnect != nil {
-		b := widget.NewButtonWithIcon("Connect", theme.ConfirmIcon(), func() {
-			if n, ok := f.Node(); ok {
-				f.opts.OnConnect(n)
-			}
-		})
+		b := widget.NewButtonWithIcon("Connect", theme.ConfirmIcon(), f.Connect)
 		b.Importance = widget.HighImportance
 		f.buttons = append(f.buttons, b)
 		bar.Add(b)

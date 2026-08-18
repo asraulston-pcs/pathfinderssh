@@ -81,6 +81,19 @@ func ShowSearchDialog(w fyne.Window, prev SearchLaunch, knownTypes []string, onR
 	content := container.NewVBox(body, note)
 
 	var d dialog.Dialog
+
+	// Return runs the search. The wiring is idempotent -- EnterConfirms
+	// leaves an entry that already has a handler alone -- so calling this
+	// again after the validation re-show only moves the focus, which is
+	// the point: the same content object comes back and the cursor should
+	// be in it.
+	enterSearches := func() {
+		EnterConfirms(w, content, func() {
+			if c, ok := d.(*dialog.ConfirmDialog); ok {
+				c.Confirm()
+			}
+		})
+	}
 	d = dialog.NewCustomConfirm("Search captures", "Search", "Cancel", content,
 		func(ok bool) {
 			if !ok {
@@ -113,12 +126,14 @@ func ShowSearchDialog(w fyne.Window, prev SearchLaunch, knownTypes []string, onR
 					}, w)
 				d.Resize(searchDialogSize)
 				d.Show()
+				enterSearches()
 				return
 			}
 			onRun(l)
 		}, w)
 	d.Resize(searchDialogSize)
 	d.Show()
+	enterSearches()
 }
 
 var searchDialogSize = fyne.NewSize(620, 380)

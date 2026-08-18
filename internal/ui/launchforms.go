@@ -239,6 +239,11 @@ func ShowCrawlDialog(w fyne.Window, prev CrawlLaunch, onRun func(CrawlLaunch)) {
 		}, w)
 		d.Resize(fyne.NewSize(700, 560))
 		d.Show()
+		// After Show: focus resolves through the overlay's own focus
+		// manager, which does not exist until the overlay does. The
+		// seed and exclude boxes are multi-line and keep Return as a
+		// newline.
+		EnterConfirms(w, content, d.Confirm)
 	}
 	show()
 }
@@ -447,6 +452,11 @@ func ShowCaptureDialog(w fyne.Window, prev CaptureLaunch, knownTypes []string, o
 		}, w)
 		d.Resize(fyne.NewSize(700, 560))
 		d.Show()
+		// After Show: focus resolves through the overlay's own focus
+		// manager, which does not exist until the overlay does. The
+		// seed and exclude boxes are multi-line and keep Return as a
+		// newline.
+		EnterConfirms(w, content, d.Confirm)
 	}
 	show()
 }

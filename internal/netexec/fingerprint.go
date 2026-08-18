@@ -46,6 +46,39 @@ func isCLIError(out string) bool {
 	return cliErrorRe.MatchString(out)
 }
 
+// Bounds on what LooksLikeRejection will consider. A refusal is one or two
+// lines; anything longer that happens to contain a marker is real output that
+// merely looks alarming.
+const (
+	rejectionMaxBytes = 240
+	rejectionMaxLines = 4
+)
+
+// LooksLikeRejection reports whether out is a CLI refusing a command rather
+// than answering it.
+//
+// This exists because a rejection is not an error at the transport layer: the
+// device accepted the line, replied, and returned to its prompt, so the read
+// succeeds and the caller gets a perfectly valid string that happens to mean
+// "no". A caller that stores whatever it reads will file that refusal as
+// content.
+//
+// The size bounds are the whole reason this is separate from isCLIError.
+// cliErrorRe is multiline and anchors on things like a leading "%", which real
+// captures do contain — a banner line inside a running-config being the
+// obvious one. Restricting the question to output too short to BE a capture
+// keeps that from turning a config into a false negative, at the cost of
+// missing a refusal that arrives with a wall of help text. That trade only
+// goes one way on purpose: failing to detect a refusal stores junk that a
+// human will spot, while a false positive silently discards a real capture.
+func LooksLikeRejection(out string) bool {
+	t := strings.TrimSpace(out)
+	if t == "" || len(t) > rejectionMaxBytes || strings.Count(t, "\n") >= rejectionMaxLines {
+		return false
+	}
+	return isCLIError(t)
+}
+
 // versionClass maps version-command output to a platform name.
 type versionClass struct {
 	name  string

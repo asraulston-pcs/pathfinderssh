@@ -228,3 +228,14 @@ func TestUnknownKeysDoNotFailTheLoad(t *testing.T) {
 		t.Fatalf("host = %q", n.Host)
 	}
 }
+
+// A new session is created for a device, and a device does not run an SSH
+// agent. Blank-in-a-file still means agent, which is a different statement.
+func TestANewSessionDefaultsToPasswordAuth(t *testing.T) {
+	if got := Defaults().AuthType; got != AuthPassword {
+		t.Errorf("Defaults().AuthType = %q, want %q", got, AuthPassword)
+	}
+	if got := (Node{}).Normalize().AuthType; got != AuthAgent {
+		t.Errorf("a blank node normalizes to %q, want %q", got, AuthAgent)
+	}
+}

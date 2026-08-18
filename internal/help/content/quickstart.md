@@ -112,7 +112,9 @@ at the sessions rather than typing a device list:
 
 - **Session file** — your `sessions.yaml`.
 - **Match sessions** — `*` for everything, or a glob like `eng-*`.
-- **Types** — tick `running-config` and `inventory`.
+- **Types** — tick `running-config` and `inventory`. `arp-table` and
+  `mac-table` are there too, and cost nothing extra to add; they keep a rolling
+  five versions rather than a full history, because they change on their own.
 - **Store** — a directory. It is created if it does not exist.
 
 Each device is dialled once and every selected type is read over that one

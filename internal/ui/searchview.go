@@ -73,6 +73,17 @@ type SearchView struct {
 	content *widget.RichText
 	scroll  *container.Scroll
 
+	// bar reports that a scan is running, and how far along it is.
+	//
+	// It is a widget rather than more text in the header because "is this
+	// still going" was being answered by reading a word inside a line that
+	// also holds the query and the summary — and by the Stop button's
+	// disabled state, which is the wrong signal twice over: disabled
+	// styling is deliberately low-contrast, and it means "you cannot press
+	// this" rather than "your answer is ready". Presence is easier to read
+	// than prose: the bar is there while it runs and gone when it stops.
+	bar *widget.ProgressBar
+
 	loop *redraw
 
 	mu       sync.RWMutex
@@ -83,6 +94,14 @@ type SearchView struct {
 	failed   string
 	needle   string
 	fold     bool
+
+	// running is what the bar's visibility follows. It is set by the host
+	// rather than inferred from progress, because a scan that has started
+	// but not yet reported a device is still running, and a scan of an
+	// empty store may never report one at all.
+	running   bool
+	scanDone  int
+	scanTotal int
 
 	// selected is the hit whose artifact is in the content pane, by index
 	// into hits. -1 for none.
@@ -218,7 +237,22 @@ func (v *SearchView) build() {
 	connect.Disable()
 	v.connect = connect
 
-	top := container.NewBorder(v.header, nil, nil, nil, v.table)
+	// Hidden until a scan starts. TextFormatter rather than the default
+	// percentage: "scanning 42/106 devices" is the thing being waited on,
+	// and a percentage of an unknown-sized store means nothing.
+	v.bar = widget.NewProgressBar()
+	v.bar.TextFormatter = func() string {
+		v.mu.RLock()
+		done, total := v.scanDone, v.scanTotal
+		v.mu.RUnlock()
+		if total <= 0 {
+			return "scanning…"
+		}
+		return fmt.Sprintf("scanning %d/%d devices", done, total)
+	}
+	v.bar.Hide()
+
+	top := container.NewBorder(container.NewVBox(v.header, v.bar), nil, nil, nil, v.table)
 	bottom := container.NewBorder(
 		container.NewBorder(nil, nil, nil, connect, v.status), nil, nil, nil, v.scroll)
 
@@ -262,7 +296,58 @@ func (v *SearchView) SetMatcher(m storesearch.Matcher) {
 func (v *SearchView) SetProgress(done, total int) {
 	v.mu.Lock()
 	v.progress = fmt.Sprintf("scanning %d/%d…", done, total)
+	v.scanDone, v.scanTotal = done, total
 	v.mu.Unlock()
+	v.loop.mark()
+}
+
+// SetRunning marks a scan as started or finished, which is what the progress
+// bar's visibility follows.
+//
+// Separate from SetProgress and SetResult because neither can stand in for it.
+// A scan that has started but not yet reported its first device is running
+// with no progress to show, and a store with nothing in it may report no
+// progress at all — so inferring "running" from the presence of a count would
+// leave both of those looking finished before they were.
+func (v *SearchView) SetRunning(on bool) {
+	v.mu.Lock()
+	v.running = on
+	if on {
+		v.scanDone, v.scanTotal = 0, 0
+		v.progress = ""
+	}
+	v.mu.Unlock()
+	v.loop.mark()
+}
+
+// Reset clears everything a previous search left behind, so the view can be
+// re-run in place instead of the operator having to close the tab.
+//
+// loadedFor is the one that bites if it is forgotten: it is the cache key
+// saying which artifact the lower pane holds, so leaving it set means the
+// previous device's file stays on screen under the new hits, and selecting a
+// hit in a DIFFERENT file that happens to share the key would scroll the old
+// content rather than load the new.
+func (v *SearchView) Reset() {
+	v.mu.Lock()
+	v.hits = nil
+	v.result = storesearch.Result{}
+	v.progress = ""
+	v.failed = ""
+	v.selected = -1
+	v.loadedFor = ""
+	v.contentRows = 0
+	v.pendingScroll = 0
+	v.scanDone, v.scanTotal = 0, 0
+	v.mu.Unlock()
+
+	fyne.Do(func() {
+		v.content.Segments = nil
+		v.content.Refresh()
+		v.table.UnselectAll()
+		v.connect.Disable()
+		v.status.SetText("")
+	})
 	v.loop.mark()
 }
 
@@ -311,6 +396,7 @@ func (v *SearchView) refresh() {
 	nHits := len(v.hits)
 	jump := v.pendingScroll
 	v.pendingScroll = 0
+	running, done, total := v.running, v.scanDone, v.scanTotal
 	v.mu.Unlock()
 
 	head := desc
@@ -325,6 +411,20 @@ func (v *SearchView) refresh() {
 
 	fyne.Do(func() {
 		v.header.SetText(head)
+		// Value before visibility: a bar shown at its previous run's
+		// fill for one tick reads as a scan that resumed part-done.
+		if total > 0 {
+			v.bar.Max = float64(total)
+			v.bar.SetValue(float64(done))
+		} else {
+			v.bar.Max = 1
+			v.bar.SetValue(0)
+		}
+		if running {
+			v.bar.Show()
+		} else {
+			v.bar.Hide()
+		}
 		v.table.Refresh()
 		if len(res.Skips) > 0 && prog == "" && failed == "" && jump == 0 {
 			v.status.SetText(skipLine(res.Skips))

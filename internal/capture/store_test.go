@@ -30,7 +30,7 @@ var t0 = time.Date(2026, 7, 31, 15, 4, 22, 0, time.UTC)
 
 func TestFirstCaptureWritesAFileAndAHistoryLine(t *testing.T) {
 	s := store(t)
-	art, err := s.Put(dev("lab-r1.lab.example"), "running-config", "show running-config", t0, []byte("hostname lab-r1\n"))
+	art, err := s.Put(dev("lab-r1.lab.example"), "running-config", "show running-config", t0, []byte("hostname lab-r1\n"), 0)
 	if err != nil {
 		t.Fatalf("put: %v", err)
 	}
@@ -56,8 +56,8 @@ func TestFirstCaptureWritesAFileAndAHistoryLine(t *testing.T) {
 func TestIdenticalCaptureWritesNoFileButStillRecordsTheAttempt(t *testing.T) {
 	s := store(t)
 	body := []byte("hostname lab-r1\n")
-	first, _ := s.Put(dev("lab-r1"), "running-config", "show running-config", t0, body)
-	second, err := s.Put(dev("lab-r1"), "running-config", "show running-config", t0.Add(time.Hour), body)
+	first, _ := s.Put(dev("lab-r1"), "running-config", "show running-config", t0, body, 0)
+	second, err := s.Put(dev("lab-r1"), "running-config", "show running-config", t0.Add(time.Hour), body, 0)
 	if err != nil {
 		t.Fatalf("put: %v", err)
 	}
@@ -83,8 +83,8 @@ func TestIdenticalCaptureWritesNoFileButStillRecordsTheAttempt(t *testing.T) {
 
 func TestChangedCaptureWritesANewFile(t *testing.T) {
 	s := store(t)
-	first, _ := s.Put(dev("lab-r1"), "running-config", "show running-config", t0, []byte("hostname lab-r1\n"))
-	second, err := s.Put(dev("lab-r1"), "running-config", "show running-config", t0.Add(time.Hour), []byte("hostname lab-r1\nntp server 172.16.0.1\n"))
+	first, _ := s.Put(dev("lab-r1"), "running-config", "show running-config", t0, []byte("hostname lab-r1\n"), 0)
+	second, err := s.Put(dev("lab-r1"), "running-config", "show running-config", t0.Add(time.Hour), []byte("hostname lab-r1\nntp server 172.16.0.1\n"), 0)
 	if err != nil {
 		t.Fatalf("put: %v", err)
 	}
@@ -103,9 +103,9 @@ func TestRevertingToAnEarlierConfigStillWritesAFile(t *testing.T) {
 	s := store(t)
 	a := []byte("hostname lab-r1\n")
 	b := []byte("hostname lab-r1\nntp server 172.16.0.1\n")
-	s.Put(dev("lab-r1"), "running-config", "show running-config", t0, a)
-	s.Put(dev("lab-r1"), "running-config", "show running-config", t0.Add(time.Hour), b)
-	back, err := s.Put(dev("lab-r1"), "running-config", "show running-config", t0.Add(2*time.Hour), a)
+	s.Put(dev("lab-r1"), "running-config", "show running-config", t0, a, 0)
+	s.Put(dev("lab-r1"), "running-config", "show running-config", t0.Add(time.Hour), b, 0)
+	back, err := s.Put(dev("lab-r1"), "running-config", "show running-config", t0.Add(2*time.Hour), a, 0)
 	if err != nil {
 		t.Fatalf("put: %v", err)
 	}
@@ -116,8 +116,8 @@ func TestRevertingToAnEarlierConfigStillWritesAFile(t *testing.T) {
 
 func TestTwoCapturesInTheSameSecondDoNotOverwriteEachOther(t *testing.T) {
 	s := store(t)
-	first, _ := s.Put(dev("lab-r1"), "running-config", "show running-config", t0, []byte("one\n"))
-	second, err := s.Put(dev("lab-r1"), "running-config", "show running-config", t0, []byte("two\n"))
+	first, _ := s.Put(dev("lab-r1"), "running-config", "show running-config", t0, []byte("one\n"), 0)
+	second, err := s.Put(dev("lab-r1"), "running-config", "show running-config", t0, []byte("two\n"), 0)
 	if err != nil {
 		t.Fatalf("put: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestTwoCapturesInTheSameSecondDoNotOverwriteEachOther(t *testing.T) {
 // Microsoft Store.
 func TestCaptureFilenamesAreLegalOnWindows(t *testing.T) {
 	s := store(t)
-	art, _ := s.Put(dev("lab-r1"), "running-config", "show running-config", t0, []byte("x\n"))
+	art, _ := s.Put(dev("lab-r1"), "running-config", "show running-config", t0, []byte("x\n"), 0)
 	name := filepath.Base(art.Path)
 	if strings.ContainsAny(name, `:<>"|?*\/`) {
 		t.Errorf("filename %q contains a character Windows rejects", name)
@@ -150,10 +150,10 @@ func TestCaptureFilenamesAreLegalOnWindows(t *testing.T) {
 // a traversal if it were ever used raw.
 func TestSlugCollisionBetweenDifferentDevicesIsRefused(t *testing.T) {
 	s := store(t)
-	if _, err := s.Put(dev("lab-r1"), "running-config", "show running-config", t0, []byte("a\n")); err != nil {
+	if _, err := s.Put(dev("lab-r1"), "running-config", "show running-config", t0, []byte("a\n"), 0); err != nil {
 		t.Fatalf("put: %v", err)
 	}
-	_, err := s.Put(dev("lab/r1"), "running-config", "show running-config", t0, []byte("b\n"))
+	_, err := s.Put(dev("lab/r1"), "running-config", "show running-config", t0, []byte("b\n"), 0)
 	if err == nil {
 		t.Fatal("a second device silently joined the first device's history")
 	}
@@ -168,10 +168,10 @@ func TestSlugCollisionBetweenDifferentDevicesIsRefused(t *testing.T) {
 // would turn an ordinary capture into an error.
 func TestCaseDifferenceIsTheSameDeviceNotACollision(t *testing.T) {
 	s := store(t)
-	if _, err := s.Put(dev("lab-r1"), "running-config", "show running-config", t0, []byte("a\n")); err != nil {
+	if _, err := s.Put(dev("lab-r1"), "running-config", "show running-config", t0, []byte("a\n"), 0); err != nil {
 		t.Fatalf("put: %v", err)
 	}
-	if _, err := s.Put(dev("LAB-R1"), "running-config", "show running-config", t0.Add(time.Hour), []byte("b\n")); err != nil {
+	if _, err := s.Put(dev("LAB-R1"), "running-config", "show running-config", t0.Add(time.Hour), []byte("b\n"), 0); err != nil {
 		t.Fatalf("a case difference was refused as a collision: %v", err)
 	}
 	h, _ := s.History("lab-r1", "running-config")
@@ -183,10 +183,10 @@ func TestCaseDifferenceIsTheSameDeviceNotACollision(t *testing.T) {
 func TestDeviceInfoKeepsFirstSeenAndAccumulatesAliases(t *testing.T) {
 	s := store(t)
 	d := DeviceInfo{Canonical: "lab-r1", Aliases: []string{"172.16.1.2"}, Platform: "cisco_ios"}
-	s.Put(d, "running-config", "show running-config", t0, []byte("a\n"))
+	s.Put(d, "running-config", "show running-config", t0, []byte("a\n"), 0)
 
 	d2 := DeviceInfo{Canonical: "lab-r1", Aliases: []string{"lab-r1.lab.example"}}
-	s.Put(d2, "running-config", "show running-config", t0.Add(time.Hour), []byte("b\n"))
+	s.Put(d2, "running-config", "show running-config", t0.Add(time.Hour), []byte("b\n"), 0)
 
 	info, err := readDeviceInfo(filepath.Join(s.Root(), "devices", "lab-r1"))
 	if err != nil || info == nil {
@@ -210,8 +210,8 @@ func TestDeviceInfoKeepsFirstSeenAndAccumulatesAliases(t *testing.T) {
 // inventory never interleave in one history.
 func TestCaptureTypesAreSeparateHistories(t *testing.T) {
 	s := store(t)
-	s.Put(dev("lab-r1"), "running-config", "show running-config", t0, []byte("cfg\n"))
-	s.Put(dev("lab-r1"), "inventory", "show inventory", t0, []byte("inv\n"))
+	s.Put(dev("lab-r1"), "running-config", "show running-config", t0, []byte("cfg\n"), 0)
+	s.Put(dev("lab-r1"), "inventory", "show inventory", t0, []byte("inv\n"), 0)
 
 	cfg, _ := s.History("lab-r1", "running-config")
 	inv, _ := s.History("lab-r1", "inventory")
@@ -263,7 +263,7 @@ func TestSlug(t *testing.T) {
 
 func TestDevicesListsCanonicalNamesNotSlugs(t *testing.T) {
 	s := store(t)
-	s.Put(dev("LAB-R1.lab.example"), "running-config", "show running-config", t0, []byte("a\n"))
+	s.Put(dev("LAB-R1.lab.example"), "running-config", "show running-config", t0, []byte("a\n"), 0)
 	got, err := s.Devices()
 	if err != nil {
 		t.Fatalf("devices: %v", err)

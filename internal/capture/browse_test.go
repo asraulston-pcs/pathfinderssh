@@ -30,7 +30,7 @@ func browseStore(t *testing.T) *FileStore {
 func TestDevicesReportsDirectoriesItCannotIdentify(t *testing.T) {
 	s := browseStore(t)
 	if _, err := s.Put(dev("lab-r1.lab.example"), "running-config",
-		"show running-config", t0, []byte("hostname lab-r1\n")); err != nil {
+		"show running-config", t0, []byte("hostname lab-r1\n"), 0); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 
@@ -63,11 +63,11 @@ func TestTypesCountsAttemptsAndStoredSeparately(t *testing.T) {
 	// the shape of a healthy schedule, and the case where counting files
 	// would report a device as barely captured.
 	for i, at := range []time.Time{t0, t0.Add(24 * time.Hour), t0.Add(48 * time.Hour)} {
-		if _, err := s.Put(d, "running-config", "show running-config", at, []byte("hostname lab-r1\n")); err != nil {
+		if _, err := s.Put(d, "running-config", "show running-config", at, []byte("hostname lab-r1\n"), 0); err != nil {
 			t.Fatalf("put %d: %v", i, err)
 		}
 	}
-	if _, err := s.Put(d, "inventory", "show inventory", t0.Add(72*time.Hour), []byte("chassis\n")); err != nil {
+	if _, err := s.Put(d, "inventory", "show inventory", t0.Add(72*time.Hour), []byte("chassis\n"), 0); err != nil {
 		t.Fatalf("put inventory: %v", err)
 	}
 
@@ -107,7 +107,7 @@ func TestReadReturnsTheContentTheHistoryNames(t *testing.T) {
 	s := browseStore(t)
 	d := dev("lab-r1.lab.example")
 	want := "hostname lab-r1\n!\ninterface Loopback0\n"
-	if _, err := s.Put(d, "running-config", "show running-config", t0, []byte(want)); err != nil {
+	if _, err := s.Put(d, "running-config", "show running-config", t0, []byte(want), 0); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 
@@ -131,7 +131,7 @@ func TestReadReturnsTheContentTheHistoryNames(t *testing.T) {
 func TestReadRefusesPathElementsThatAreNotOne(t *testing.T) {
 	s := browseStore(t)
 	if _, err := s.Put(dev("lab-r1.lab.example"), "running-config",
-		"show running-config", t0, []byte("x\n")); err != nil {
+		"show running-config", t0, []byte("x\n"), 0); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	// A view is handed these strings; nothing downstream should be able to
@@ -177,11 +177,11 @@ func TestLastSeenMovesOnAnUnchangedCapture(t *testing.T) {
 	d := dev("lab-r1.lab.example")
 	content := []byte("hostname lab-r1\n")
 
-	if _, err := s.Put(d, "running-config", "show running-config", t0, content); err != nil {
+	if _, err := s.Put(d, "running-config", "show running-config", t0, content, 0); err != nil {
 		t.Fatalf("first put: %v", err)
 	}
 	later := t0.Add(72 * time.Hour)
-	art, err := s.Put(d, "running-config", "show running-config", later, content)
+	art, err := s.Put(d, "running-config", "show running-config", later, content, 0)
 	if err != nil {
 		t.Fatalf("second put: %v", err)
 	}

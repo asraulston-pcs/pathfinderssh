@@ -42,6 +42,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -178,17 +179,29 @@ func main() {
 	w.SetContent(h.shell.Content())
 	w.SetMaster()
 	w.SetCloseIntercept(func() {
-		// Tear the applets down before the window goes. Closing a
-		// transport can block, so each instance's OnClose already runs
-		// on its own goroutine -- this just makes sure they all start.
-		h.shell.CloseAll()
-		// Stop answering the browser. A map left open in a tab after
-		// the application exits should fail honestly rather than look
-		// live until something is clicked.
-		if h.maps != nil {
-			_ = h.maps.Close()
+		// The close box stays live while a dialog is up, so without
+		// this a second click stacks a second confirmation -- and
+		// answering one of them then quits out from under the other,
+		// which is the opposite of what a confirmation is for.
+		if h.askingQuit {
+			return
 		}
-		w.Close()
+		msg, ask := ui.ShutdownPrompt(h.shell.Busy())
+		if !ask {
+			h.shutdown()
+			return
+		}
+		h.askingQuit = true
+		d := dialog.NewConfirm("Quit PathfinderSSH?", msg, func(ok bool) {
+			h.askingQuit = false
+			if ok {
+				h.shutdown()
+			}
+		}, w)
+		d.SetConfirmText("Quit")
+		d.SetConfirmImportance(widget.DangerImportance)
+		d.SetDismissText("Stay open")
+		d.Show()
 	})
 	// Report an unreadable settings file now that there is a window to
 	// report it in. The application is already running on the defaults;
@@ -256,6 +269,33 @@ type host struct {
 	// that keeps working when the next map is loaded into it.
 	maps   *mapweb.Server
 	mapDir string
+
+	// askingQuit is true while the quit confirmation is on screen. UI
+	// goroutine only, like everything else the close intercept touches,
+	// so a plain bool is the honest type -- an atomic here would suggest
+	// a second writer that does not exist.
+	askingQuit bool
+}
+
+// shutdown ends the application: applets first, then the map server, then the
+// window.
+//
+// Split out of the close intercept because there are now two ways in -- the
+// straight-through case and the confirmed one -- and the failure mode if they
+// drift is that quitting past a warning skips a teardown that quitting
+// without one performs.
+func (h *host) shutdown() {
+	// Tear the applets down before the window goes. Closing a transport
+	// can block, so each instance's OnClose already runs on its own
+	// goroutine -- this just makes sure they all start.
+	h.shell.CloseAll()
+	// Stop answering the browser. A map left open in a tab after the
+	// application exits should fail honestly rather than look live until
+	// something is clicked.
+	if h.maps != nil {
+		_ = h.maps.Close()
+	}
+	h.win.Close()
 }
 
 func (h *host) logf() func(string, ...any) { return h.logfIf(false) }
@@ -306,6 +346,10 @@ func (h *host) launchTerminalTitled(title string, start sessions.Node) {
 	d = dialog.NewCustom(title, "Cancel", form.Content(), h.win)
 	d.Resize(fyne.NewSize(760, 660))
 	d.Show()
+	// This dialog's only button is Cancel -- Connect lives inside the form
+	// -- so Return goes to the form's own action rather than to the
+	// dialog's.
+	ui.EnterConfirms(h.win, form.Content(), form.Connect)
 }
 
 // --- session tree ----------------------------------------------------------
@@ -382,6 +426,7 @@ func (h *host) editSession(title string, start sessions.Node, apply func(session
 	d = dialog.NewCustom(title, "Cancel", form.Content(), h.win)
 	d.Resize(fyne.NewSize(760, 660))
 	d.Show()
+	ui.EnterConfirms(h.win, form.Content(), form.Connect)
 }
 
 // folderFor finds the folder holding this node, reporting false when the answer
@@ -680,11 +725,11 @@ func (h *host) askMapImport(defaultFolder string, data []byte) {
 	leafItem := widget.NewFormItem("Include leaves", leaves)
 	leafItem.HintText = "devices a neighbour reported but the crawl never dialled"
 
-	dialog.ShowForm("Import topology map", "Import", "Cancel",
-		[]*widget.FormItem{
-			widget.NewFormItem("Folder", name),
-			leafItem,
-		},
+	items := []*widget.FormItem{
+		widget.NewFormItem("Folder", name),
+		leafItem,
+	}
+	d := dialog.NewForm("Import topology map", "Import", "Cancel", items,
 		func(ok bool) {
 			if !ok {
 				return
@@ -706,6 +751,8 @@ func (h *host) askMapImport(defaultFolder string, data []byte) {
 			sum := tr.ImportFolders([]sessions.Folder{{Name: folder, Sessions: nodes}})
 			h.applyImport(tr, sessions.FormatMap, sum)
 		}, h.win)
+	d.Show()
+	ui.EnterConfirmsForm(h.win, items, d.Submit)
 }
 
 // applyImport puts the merged tree back, saves it, and says what happened.
@@ -880,6 +927,16 @@ func (h *host) mountTerminal(n sessions.Node, tp term.Transport) {
 				log.Printf("[close] %v", err)
 			}
 		},
+		// Only a live transport is worth stopping somebody for. A tab
+		// whose session already died is a scrollback buffer, and
+		// warning about those is how a person learns to click through
+		// the warning without reading it.
+		Busy: func() string {
+			if sess.Connected() {
+				return "connected"
+			}
+			return ""
+		},
 	})
 	inst.SetStatus(n.Target())
 
@@ -966,11 +1023,24 @@ func (h *host) startCrawl(l ui.CrawlLaunch) {
 		title = "crawl " + l.Params.Seeds[0]
 	}
 
+	// running is this crawl's own answer to "is it still doing something",
+	// asked at shutdown. The Stop button's state is not that answer: it is
+	// disabled by cancellation as well as by completion, and a crawl that
+	// has been asked to stop is still dialing until the in-flight devices
+	// drain.
+	var running atomic.Bool
+
 	inst := h.shell.Open(ui.Mount{
 		Kind:    ui.KindCrawl,
 		Title:   title,
 		Applet:  view,
 		Actions: []fyne.CanvasObject{stop},
+		Busy: func() string {
+			if running.Load() {
+				return "running"
+			}
+			return ""
+		},
 		// Cancel on close as well as on Stop. Closing the tab of a
 		// running crawl and leaving it dialing devices in the background
 		// is the kind of thing that is only noticed by the lockout
@@ -995,8 +1065,13 @@ func (h *host) startCrawl(l ui.CrawlLaunch) {
 	// look identical either way, and a blank path field reads exactly like
 	// a write that failed.
 	var outputs []string
+	running.Store(true)
 	go func() {
 		defer func() {
+			// First, so that every later line -- including a dialog
+			// raised from the deferred summary -- already reports
+			// the run as over.
+			running.Store(false)
 			run.Finish()
 			c := run.Counts()
 			summary := fmt.Sprintf(
@@ -1220,6 +1295,19 @@ func (h *host) launchSearch() {
 	})
 }
 
+// startSearch opens one search tab and keeps it usable for further searches.
+//
+// The tab outlives any single run. What made the first version awkward was
+// that the run WAS the tab: the query lived in a modal reached only from the
+// main window's toolbar, every run opened another tab, and the Stop button
+// doubled as the completion signal by disabling itself — which is unreadable
+// by design, since a greyed control means "you cannot press this" rather than
+// "your answer is ready". A detached window could not reach the toolbar at
+// all, so the only way to ask a second question was to close the window.
+//
+// So the two jobs are split. The progress bar in the view says whether a scan
+// is running, and one always-enabled button is the control: Stop while a scan
+// is in flight, New search when it is not.
 func (h *host) startSearch(l ui.SearchLaunch) {
 	// A dialog rather than a status line, and before any tab is opened:
 	// there is nothing yet to put a status on, and an empty search tab
@@ -1235,8 +1323,13 @@ func (h *host) startSearch(l ui.SearchLaunch) {
 		return
 	}
 
+	// store and matcher are built here only to fail fast: a bad path or an
+	// empty query becomes a dialog before any tab exists, rather than an
+	// empty search tab that reads like a store with nothing in it. start()
+	// builds its own from whichever launch it is given.
+	_ = matcher
+
 	view := ui.NewSearchView(store)
-	view.SetMatcher(matcher)
 	// The store keys on the canonical device name, which is the same
 	// identity the binding store and the session tree use — so a hit
 	// becomes a session through exactly the path a map click already
@@ -1244,47 +1337,164 @@ func (h *host) startSearch(l ui.SearchLaunch) {
 	// resolving it is the dialer's job, not the view's.
 	view.OnConnect = func(device string) { h.mapConnect(mapweb.NodeRef{Name: device}) }
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// run holds the state one tab carries across many searches. The cancel
+	// func is per-run and must be replaced on every start, which is the
+	// whole reason this is a struct and not a closed-over variable: the
+	// Stop button is built once and has to cancel whichever run is current
+	// when it is pressed, not the first one.
+	var run struct {
+		mu      sync.Mutex
+		cancel  context.CancelFunc
+		running bool
+		last    ui.SearchLaunch
+		// gen identifies the current run. A finishing goroutine
+		// compares its own generation against this before touching the
+		// view, because a superseded scan still returns — with whatever
+		// partial result it had — and installing that would blank the
+		// hits its replacement has already put on screen.
+		gen int
+	}
+	run.last = l
 
-	var stop *widget.Button
-	stop = widget.NewButtonWithIcon("Stop", theme.MediaStopIcon(), func() {
-		cancel()
-		stop.SetText("Stopping…")
-		stop.Disable()
+	var action *widget.Button
+	var inst *ui.Instance
+
+	idle := func() {
+		action.SetIcon(theme.SearchIcon())
+		action.SetText("New search")
+		action.Enable()
+	}
+	busy := func() {
+		action.SetIcon(theme.MediaStopIcon())
+		action.SetText("Stop")
+		action.Enable()
+	}
+
+	// start executes one search into the existing view. Callable repeatedly.
+	var start func(ui.SearchLaunch)
+	start = func(l ui.SearchLaunch) {
+		st, err := capture.OpenFileStore(l.StorePath)
+		if err != nil {
+			dialog.ShowError(err, h.win)
+			return
+		}
+		m, err := storesearch.NewLiteral(l.Query, l.CaseSensitive)
+		if err != nil {
+			dialog.ShowError(err, h.win)
+			return
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		run.mu.Lock()
+		// Cancel anything still in flight before adopting the new run.
+		// Without this a slow scan and its replacement both reach
+		// SetResult, and the later answer can be overwritten by the
+		// earlier one arriving last.
+		if run.cancel != nil {
+			run.cancel()
+		}
+		run.gen++
+		gen := run.gen
+		run.cancel, run.running, run.last = cancel, true, l
+		run.mu.Unlock()
+
+		view.Reset()
+		view.SetMatcher(m)
+		view.SetRunning(true)
+		busy()
+		inst.SetTitle("search " + l.Query)
+		inst.SetStatus(filepath.Base(l.StorePath))
+
+		go func() {
+			res, err := storesearch.Search(ctx, st, m, storesearch.Options{
+				Types:      l.Types,
+				Limit:      l.Limit,
+				OnProgress: view.SetProgress,
+			})
+
+			run.mu.Lock()
+			current := gen == run.gen
+			if current {
+				run.running = false
+			}
+			run.mu.Unlock()
+
+			// A superseded run owns nothing. Its replacement has
+			// already reset the view, set the title and taken the
+			// button; every line below would undo one of those.
+			if !current {
+				return
+			}
+
+			view.SetRunning(false)
+			// A cancelled search still carries the hits it found
+			// before it was stopped, so the result is installed
+			// either way and the cancellation is reported as status
+			// rather than as failure.
+			view.SetResult(res)
+			if err != nil && ctx.Err() == nil {
+				view.SetError(err)
+			}
+			fyne.Do(func() {
+				idle()
+				if err == nil || ctx.Err() != nil {
+					inst.SetStatus(res.Summary())
+				}
+			})
+		}()
+	}
+
+	action = widget.NewButtonWithIcon("Stop", theme.MediaStopIcon(), func() {
+		run.mu.Lock()
+		running, last := run.running, run.last
+		cancel := run.cancel
+		run.mu.Unlock()
+
+		if running {
+			if cancel != nil {
+				cancel()
+			}
+			return
+		}
+		// Idle: ask for the next query, seeded with this tab's last
+		// one, and run it here instead of opening another tab.
+		ui.ShowSearchDialog(h.win, last, capturedial.KnownTypes(), func(next ui.SearchLaunch) {
+			h.lastSearch = next
+			start(next)
+		})
 	})
 
-	inst := h.shell.Open(ui.Mount{
+	inst = h.shell.Open(ui.Mount{
 		Kind: ui.KindSearch,
 		// The query IS the title. Several searches coexist the way two
 		// crawls already do, and a tab strip of tabs all called
 		// "search" is a tab strip nobody can navigate.
 		Title:   "search " + l.Query,
 		Applet:  view,
-		Actions: []fyne.CanvasObject{stop},
-		OnClose: cancel,
+		Actions: []fyne.CanvasObject{action},
+		OnClose: func() {
+			run.mu.Lock()
+			c := run.cancel
+			run.mu.Unlock()
+			if c != nil {
+				c()
+			}
+		},
+		// A scan in flight is worth mentioning; a tab holding the hits
+		// from a finished one is not. The lock is the same one every
+		// other reader of this struct takes -- the answer is a bool
+		// read, so it is held for no longer than that.
+		Busy: func() string {
+			run.mu.Lock()
+			defer run.mu.Unlock()
+			if run.running {
+				return "searching"
+			}
+			return ""
+		},
 	})
-	inst.SetStatus(filepath.Base(l.StorePath))
 
-	go func() {
-		res, err := storesearch.Search(ctx, store, matcher, storesearch.Options{
-			Types:      l.Types,
-			Limit:      l.Limit,
-			OnProgress: view.SetProgress,
-		})
-		fyne.Do(func() {
-			stop.SetText("Done")
-			stop.Disable()
-		})
-		// A cancelled search still carries the hits it found before it
-		// was stopped, so the result is installed either way and the
-		// cancellation is reported as status rather than as failure.
-		view.SetResult(res)
-		if err != nil && ctx.Err() == nil {
-			view.SetError(err)
-			return
-		}
-		fyne.Do(func() { inst.SetStatus(res.Summary()) })
-	}()
+	start(l)
 }
 
 func (h *host) launchCapture() {
@@ -1334,12 +1544,23 @@ func (h *host) startCapture(l ui.CaptureLaunch) {
 		title = "capture " + filepath.Base(l.Params.StorePath)
 	}
 
+	// Set only where the run actually starts, below: a capture opened to
+	// browse a store has no devices to visit and returns before then, and
+	// a browser is not something to be warned about.
+	var running atomic.Bool
+
 	inst := h.shell.Open(ui.Mount{
 		Kind:    ui.KindCapture,
 		Title:   title,
 		Applet:  view,
 		Actions: []fyne.CanvasObject{stop},
 		OnClose: cancel,
+		Busy: func() string {
+			if running.Load() {
+				return "running"
+			}
+			return ""
+		},
 	})
 
 	if !l.Params.HasDeviceSource() {
@@ -1353,8 +1574,12 @@ func (h *host) startCapture(l ui.CaptureLaunch) {
 	}
 
 	logf := h.logfIf(l.Verbose)
+	running.Store(true)
 	go func() {
 		defer func() {
+			// First, so a dialog raised from anything below already
+			// reports the run as over.
+			running.Store(false)
 			run.Finish()
 			c := run.Counts()
 			fyne.Do(func() {
@@ -1434,7 +1659,7 @@ func (h *host) unlockQuiet() {
 //	go build -ldflags "-X main.version=$(git describe --tags --always --dirty)"
 //
 // Left as "dev" otherwise, which is what an unstamped local build honestly is.
-var version = "dev"
+var version = "0.93"
 
 // showAbout opens the About box.
 //
@@ -1694,6 +1919,7 @@ func (h *host) showCreateVaultDialog(start string) {
 		}, h.win)
 		d.Resize(fyne.NewSize(600, 380))
 		d.Show()
+		ui.EnterConfirmsForm(h.win, items, d.Submit)
 	}
 	show()
 }
@@ -1814,6 +2040,7 @@ func (h *host) showUnlockVaultDialog() {
 	}, h.win)
 	d.Resize(fyne.NewSize(560, 300))
 	d.Show()
+	ui.EnterConfirmsForm(h.win, items, d.Submit)
 }
 
 // adopt takes ownership of an unlocked vault and rebuilds everything derived
@@ -1946,8 +2173,8 @@ func (h *host) promptSecret(prompt string, echo bool) (string, error) {
 			field = widget.NewEntry()
 		}
 		field.SetPlaceHolder(strings.TrimSpace(prompt))
-		d := dialog.NewForm("Authentication", "Send", "Cancel",
-			[]*widget.FormItem{widget.NewFormItem(strings.TrimSpace(prompt), field)},
+		items := []*widget.FormItem{widget.NewFormItem(strings.TrimSpace(prompt), field)}
+		d := dialog.NewForm("Authentication", "Send", "Cancel", items,
 			func(ok bool) {
 				if ok {
 					answer <- field.Text
@@ -1957,6 +2184,9 @@ func (h *host) promptSecret(prompt string, echo bool) (string, error) {
 			}, h.win)
 		d.Resize(fyne.NewSize(420, 200))
 		d.Show()
+		// The one that stings most: a password typed at a device
+		// challenge, with Return doing nothing.
+		ui.EnterConfirmsForm(h.win, items, d.Submit)
 	})
 	select {
 	case s := <-answer:

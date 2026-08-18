@@ -307,8 +307,8 @@ func (t *SessionTree) newSession() {
 func (t *SessionTree) newFolder() {
 	entry := widget.NewEntry()
 	entry.SetPlaceHolder("Site, role, customer…")
-	dialog.ShowForm("New folder", "Create", "Cancel",
-		[]*widget.FormItem{widget.NewFormItem("Name", entry)},
+	items := []*widget.FormItem{widget.NewFormItem("Name", entry)}
+	d := dialog.NewForm("New folder", "Create", "Cancel", items,
 		func(ok bool) {
 			if !ok {
 				return
@@ -319,6 +319,12 @@ func (t *SessionTree) newFolder() {
 			}
 			t.changed()
 		}, t.opts.Window)
+	d.Show()
+	// A one-field dialog is the worst case for having to reach for the
+	// mouse: type the name, then go and click. Submit rather than the
+	// callback, so Return cannot get past a validation the button would
+	// have refused.
+	EnterConfirmsForm(t.opts.Window, items, d.Submit)
 }
 
 func (t *SessionTree) editSelected() {
@@ -365,8 +371,8 @@ func (t *SessionTree) editRow(uid widget.TreeNodeID) {
 func (t *SessionTree) renameFolder(name string) {
 	entry := widget.NewEntry()
 	entry.SetText(name)
-	dialog.ShowForm("Rename folder", "Rename", "Cancel",
-		[]*widget.FormItem{widget.NewFormItem("Name", entry)},
+	items := []*widget.FormItem{widget.NewFormItem("Name", entry)}
+	d := dialog.NewForm("Rename folder", "Rename", "Cancel", items,
 		func(ok bool) {
 			if !ok {
 				return
@@ -377,6 +383,8 @@ func (t *SessionTree) renameFolder(name string) {
 			}
 			t.changed()
 		}, t.opts.Window)
+	d.Show()
+	EnterConfirmsForm(t.opts.Window, items, d.Submit)
 }
 
 func (t *SessionTree) deleteSelected() {

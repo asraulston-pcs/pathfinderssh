@@ -62,7 +62,7 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
     } catch {
         $Version = ""
     }
-    if ([string]::IsNullOrWhiteSpace($Version)) { $Version = "dev" } else { $Version = $Version.Trim() }
+    if ([string]::IsNullOrWhiteSpace($Version)) { $Version = "0.93" } else { $Version = $Version.Trim() }
 }
 
 $env:CGO_ENABLED = "1"

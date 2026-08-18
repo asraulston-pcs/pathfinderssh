@@ -7,6 +7,31 @@ anything worth reading on a schedule fits.
 Every command a capture can run is on a read-only allowlist that is enforced by
 the build. Nothing here writes to a device.
 
+## Capture types
+
+| Type | What it reads | Versions kept |
+| --- | --- | --- |
+| `running-config` | The active configuration. | All of them. |
+| `startup-config` | The saved configuration — what the device comes back as. | All of them. |
+| `inventory` | Chassis, modules and serial numbers. | All of them. |
+| `arp-table` | IP to MAC resolution, as the device currently holds it. | The last five. |
+| `mac-table` | Which MAC address was last seen on which port. | The last five. |
+
+The first three change when somebody changes something. An unchanged run of one
+stores nothing, so the history stays short by itself and none of it is ever
+thrown away.
+
+The last two change because time passed. Every capture of an ARP table differs
+from the one before it, so every run writes a file — which is why they keep a
+rolling five versions per device and drop the oldest as a new one lands. That
+bound is a property of the type, not a setting: configuration history is never
+pruned, and a nightly capture of a table that moves on its own does not grow
+without end.
+
+`arp-table` and `mac-table` answer the question a configuration cannot — which
+port is this MAC on, which IP was that — and they cost nothing extra to collect,
+since every type you tick is read over the one session already open.
+
 ![The capture dialog](images/capture_dialog.png)
 
 ## Capture tab
@@ -17,7 +42,7 @@ the build. Nothing here writes to a device.
 | Device file | A file of device names. `#` starts a comment. |
 | Session file | Your `sessions.yaml`, as the device source. |
 | Match sessions | Globs selecting from that session file, e.g. `*`, `eng-*`, `*-sw-*`. Matches a session name or its host. |
-| Types | Which captures to take. Nothing ticked means the default, `running-config`. |
+| Types | Which captures to take, from the five above. Nothing ticked means the default, `running-config`. |
 | Store | Directory the captures are written to. |
 | Domain suffixes | Suffixes stripped from device names, so one device does not file itself under two. |
 | Host keys | Strict or TOFU. **Strict is the default here.** |
@@ -63,13 +88,29 @@ in one of four states:
 | --- | --- |
 | Stored | The output differed from the last stored version, so a new version was written. |
 | Unchanged | Identical to what is already stored. Nothing written. |
-| Not applicable | This platform has no command for this type. Not a failure. |
+| Not applicable | There was nothing here to read. Not a failure. |
 | Failed | The device or the command did not answer. The reason is on the row. |
 
 **Unchanged is the healthy outcome of a schedule**, which is why it is not
 reported as a decision. A nightly capture of a stable estate should be almost
 entirely unchanged, and a store that grows every night regardless is a store
 telling you nothing.
+
+**Not applicable is the ordinary answer for `mac-table` on a router**, and it
+arrives two different ways. A platform is an operating system rather than a
+chassis, so a Junos router and a Junos switch look alike from here: the routers
+are recognised and never asked, and you will see the row with no command against
+it. A Cisco router is asked, answers that it cannot, and the refusal is
+recognised as a refusal rather than stored as though it were a table — the row
+then shows the command that was sent. Neither is a failure, and neither puts
+anything in the store.
+
+The asymmetry is deliberate. Recognising a device by model only works where the
+list of models is short and finished, which is true of the Junos switching
+families and is not true of Catalyst. Where the list is open, asking and being
+refused is the safer of the two mistakes: a refusal corrects itself the moment
+the device changes, and a device wrongly skipped is never captured again and
+never says so.
 
 ## The store browser
 
@@ -82,6 +123,11 @@ Files are laid out as `<store>/devices/<device>/<type>/<timestamp>.txt`, with a
 per-type history recording every attempt — including the ones that stored
 nothing because nothing had changed. It is plain text in ordinary directories,
 so anything else you own can read it too.
+
+Pruning happens inside one device's type directory, so an `arp-table` folder
+holds at most its newest five files and the config folder beside it is
+untouched. The history keeps its full record of what was collected and when;
+only the files are removed.
 
 Comparing two versions of a configuration is comparing two text files. Run it
 nightly and the store becomes the answer to "when did this change".

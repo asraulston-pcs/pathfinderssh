@@ -39,7 +39,7 @@ mkdir -p "$OUT"
 
 ARCH="${1:-$(go env GOARCH)}"   # arm64 | amd64 | universal
 
-VERSION="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
+VERSION="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo 0.93)}"
 TAGS="${TAGS:-}"
 
 BUILDFLAGS=(-trimpath)

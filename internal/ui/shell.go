@@ -110,6 +110,20 @@ type Mount struct {
 	// serial port whose adapter was unplugged can block in the driver and
 	// doing that inline freezes the window instead of closing the tab.
 	OnClose func()
+
+	// Busy reports what this instance would lose if it were closed right
+	// now -- "connected", "running" -- or "" when it would lose nothing.
+	//
+	// The shell cannot answer this itself, which is the point: a tab is
+	// open either way, and only the host holds the session or the cancel
+	// func that knows the difference between a live crawl and a table of
+	// last hour's results. An applet with no Busy is never counted, which
+	// is the right default: silence means nothing to lose.
+	//
+	// It is asked on the UI goroutine while the person waits, so it must
+	// answer from state it already has. No dialing, no file reads, no
+	// blocking.
+	Busy func() string
 }
 
 // Instance is one hosted applet. The shell owns it; the host holds the pointer
@@ -146,6 +160,29 @@ func (i *Instance) Title() string { return i.info.Title }
 
 // SetStatus writes the instance's status line. Safe only on the UI goroutine.
 func (i *Instance) SetStatus(msg string) { i.status.SetText(msg) }
+
+// SetTitle renames the instance and whatever is currently displaying it.
+//
+// An instance is either a tab or a window and never both, so exactly one of
+// the two branches applies — the same split Detach and Redock maintain. A
+// rename that only updated the registry would leave the strip showing the
+// previous name, which for a re-run search means a tab labelled with the
+// query it used to hold.
+//
+// UI goroutine only, like the rest of the shell.
+func (i *Instance) SetTitle(base string) {
+	title, ok := i.shell.reg.Rename(i.info.ID, base)
+	if !ok {
+		return
+	}
+	if i.tab != nil {
+		i.tab.Text = title
+		i.shell.tabs.Refresh()
+	}
+	if i.win != nil {
+		i.win.SetTitle(title)
+	}
+}
 
 // Shell is the application window's content: a launcher toolbar over a tab
 // strip.
@@ -871,6 +908,36 @@ func (s *Shell) CloseOthers(keep *Instance) {
 			inst.Close()
 		}
 	}
+}
+
+// Busy is every open instance that answers Busy with a reason, docked and
+// detached alike, in display order.
+//
+// Display order rather than map order: this is read as a list, and a list
+// whose rows reshuffle every time it is shown is one nobody trusts to be the
+// same list. It walks the registry for that ordering and looks each instance
+// up, so an instance that has already been removed simply does not appear.
+//
+// UI goroutine only -- it reads byID and calls into the host.
+func (s *Shell) Busy() []BusyInstance {
+	var out []BusyInstance
+	for _, info := range s.reg.All() {
+		inst := s.byID[info.ID]
+		if inst == nil || inst.mount.Busy == nil {
+			continue
+		}
+		reason := inst.mount.Busy()
+		if reason == "" {
+			continue
+		}
+		out = append(out, BusyInstance{
+			Kind:      info.Kind,
+			Title:     info.Title,
+			Reason:    reason,
+			Placement: info.Placement,
+		})
+	}
+	return out
 }
 
 // instances is a snapshot of every open instance, safe to iterate while

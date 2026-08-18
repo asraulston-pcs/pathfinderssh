@@ -87,6 +87,28 @@ type Command struct {
 
 	// Cost selects the concurrency lane.
 	Cost Cost
+
+	// ModelMatch, when set, gates this command on the fingerprint's
+	// version output. A device whose version text does not match is
+	// reported not-applicable and the command is never sent.
+	//
+	// It exists because a platform key is a NOS, not a chassis. Every
+	// Junos box answers to "juniper_junos" whether or not it has a bridge
+	// table, so a forwarding-table command aimed at a switch would
+	// otherwise be sent to every router in the estate.
+	//
+	// Use it only where the qualifying set is small and CLOSED, which in
+	// practice means Junos: QFX and EX are the switches, everything else
+	// is not, and that list does not move. Do NOT reach for it on Cisco
+	// IOS. The Catalyst model space is large and still growing, so a
+	// positive pattern there becomes a regex edited on every hardware
+	// refresh — and its failure mode is the bad one. A switch the pattern
+	// does not recognise is silently reported not-applicable and never
+	// captured again, which is indistinguishable from a device that
+	// legitimately has no such table. Where the set is open, send the
+	// command and let the rejection check catch the refusal: a refusal is
+	// self-correcting and a missing pattern is not.
+	ModelMatch *regexp.Regexp
 }
 
 // Spec is one capture type across every platform that supports it.
@@ -97,6 +119,23 @@ type Spec struct {
 
 	// Description is one line, for the harness and for a UI picker.
 	Description string
+
+	// Keep bounds how many distinct versions of this type the store holds
+	// per device. Zero means unlimited, which is the only safe default: a
+	// config backup that silently discards history is not a backup, and
+	// every spec that existed before retention did stays at zero without
+	// being edited.
+	//
+	// It is a property of the TYPE and not of the platform, because what
+	// makes a capture worth keeping forever is what it is, not which
+	// vendor produced it. A config is the record; an ARP table is a
+	// sample of something that was already different by the time it was
+	// stored.
+	//
+	// Retention is per (device, type) rather than global, because pruning
+	// happens inside one device's type directory and a global count would
+	// mean one busy device evicting another's history.
+	Keep int
 
 	// Commands maps a netexec platform name to its command. A platform
 	// absent from this map is NOT AN ERROR — it is "not applicable", which
@@ -136,6 +175,9 @@ func (s Spec) Validate() error {
 	}
 	if len(s.Commands) == 0 {
 		return fmt.Errorf("capture type %q has no commands", s.Type)
+	}
+	if s.Keep < 0 {
+		return fmt.Errorf("capture type %q has negative Keep; zero means unlimited", s.Type)
 	}
 	for platform, c := range s.Commands {
 		if strings.TrimSpace(c.Command) == "" {
@@ -203,12 +245,76 @@ var Inventory = Spec{
 	},
 }
 
+// ARPTable is layer-3 to layer-2 resolution, as the device currently sees it.
+//
+// The first of the two BOUNDED types, and the reason Keep exists. A config
+// changes when someone changes it; an ARP table changes because time passed.
+// Every capture of one is a new file, so an unbounded history of them is a
+// directory that grows without ever answering a question the newest few could
+// not — while the config history beside it stays small precisely because it
+// only grows when something happened.
+//
+// Junos takes `no-resolve`: without it the device attempts a reverse DNS
+// lookup per entry, which on a table of any size turns a fast read into a
+// slow one bounded by a resolver rather than by the chassis.
+var ARPTable = Spec{
+	Type:        "arp-table",
+	Description: "IP to MAC resolution as currently held (rolling history)",
+	Keep:        5,
+	Commands: map[string]Command{
+		"cisco_ios":     {Command: "show ip arp"},
+		"cisco_iosxe":   {Command: "show ip arp"},
+		"cisco_nxos":    {Command: "show ip arp"},
+		"arista_eos":    {Command: "show ip arp"},
+		"juniper_junos": {Command: "show arp no-resolve"},
+	},
+}
+
+// junosSwitch matches the version output of a Junos box that has a bridge
+// table. QFX and EX are the switching families; MX, ACX, PTX and SRX are not,
+// and all of them answer to the same "juniper_junos" platform key.
+//
+// Anchored on a digit so it cannot be satisfied by the word "ex" appearing in
+// a hostname or a description line.
+var junosSwitch = regexp.MustCompile(`(?i)\b(qfx|ex)[0-9]`)
+
+// MACTable is the forwarding table — which MAC was last seen on which port.
+//
+// The two vendors here need opposite treatment, and that asymmetry is the
+// point rather than an inconsistency.
+//
+// Junos gets a ModelMatch. The switching families are QFX and EX and that set
+// is closed, so gating is exact and an MX is never sent a command it cannot
+// answer.
+//
+// Cisco IOS deliberately gets NO gate even though it has the same router/
+// switch split, because the Catalyst model space is open-ended. A positive
+// pattern would silently skip any switch it failed to recognise, and a capture
+// type that quietly reports "not applicable" for a device that does have a MAC
+// table is a worse failure than one that tries and is refused. A refusal is
+// caught by the rejection check, costs one command, and corrects itself the
+// moment the device changes.
+//
+// NX-OS needs neither: every Nexus is a switch.
+var MACTable = Spec{
+	Type:        "mac-table",
+	Description: "MAC address to port forwarding entries (rolling history)",
+	Keep:        5,
+	Commands: map[string]Command{
+		"cisco_ios":     {Command: "show mac address-table"},
+		"cisco_iosxe":   {Command: "show mac address-table"},
+		"cisco_nxos":    {Command: "show mac address-table"},
+		"arista_eos":    {Command: "show mac address-table"},
+		"juniper_junos": {Command: "show ethernet-switching table brief", ModelMatch: junosSwitch},
+	},
+}
+
 // Builtin returns every shipped spec, in a stable order.
 //
 // Adding a capture type means adding a var above and a line here. That is the
 // whole extension mechanism, and it is deliberately not more than that.
 func Builtin() []Spec {
-	return []Spec{RunningConfig, StartupConfig, Inventory}
+	return []Spec{RunningConfig, StartupConfig, Inventory, ARPTable, MACTable}
 }
 
 // Lookup finds a builtin spec by type name.

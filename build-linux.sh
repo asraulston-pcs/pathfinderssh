@@ -48,7 +48,7 @@ cd "$(dirname "$0")"
 OUT="dist/linux"
 mkdir -p "$OUT"
 
-VERSION="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
+VERSION="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo 0.93)}"
 TAGS="${TAGS:-}"
 SUFFIX=""
 

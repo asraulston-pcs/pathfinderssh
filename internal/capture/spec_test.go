@@ -35,6 +35,12 @@ var readOnly = map[string]bool{
 	// Inventory.
 	"show inventory":        true,
 	"show chassis hardware": true,
+	// Forwarding and resolution tables.
+	"show ip arp":            true,
+	"show arp no-resolve":    true,
+	"show mac address-table": true,
+	// Junos ELS. Gated to QFX/EX by ModelMatch; see MACTable.
+	"show ethernet-switching table brief": true,
 }
 
 func TestEveryBuiltinCommandIsOnTheReadOnlyAllowlist(t *testing.T) {
@@ -76,6 +82,21 @@ func TestTheAllowlistHasNoUnusedEntries(t *testing.T) {
 // information", because "information" contains "format" — a crude matcher
 // does not produce a stricter test, it produces a test that gets edited
 // until it is quiet.
+// writeWordExceptions records the commands that legitimately contain a word
+// from the forbidden list below, and the single word each is permitted.
+//
+// Keyed on the exact command and naming one word, so an exception cannot
+// generalise: permitting "no-resolve" here does not permit "no ip routing".
+// The alternative was to drop "no" from the word list, which would have been
+// the same trade the "set" comment below describes — a guard edited until it
+// is quiet — except worse, because "no" is the negation verb on three of the
+// five platforms this ships for.
+var writeWordExceptions = map[string]string{
+	// Junos output modifier: suppresses a reverse DNS lookup per ARP
+	// entry. Nothing is negated and nothing is written.
+	"show arp no-resolve": "no",
+}
+
 func TestNoBuiltinCommandLooksLikeAWrite(t *testing.T) {
 	forbidden := []string{
 		`conf`, `configure`, `write`, `copy`, `delete`, `erase`,
@@ -93,11 +114,39 @@ func TestNoBuiltinCommandLooksLikeAWrite(t *testing.T) {
 	for _, spec := range Builtin() {
 		for platform, cmd := range spec.Commands {
 			lower := strings.ToLower(cmd.Command)
-			for _, re := range pats {
-				if re.MatchString(lower) {
-					t.Errorf("%s/%s: %q contains %q", spec.Type, platform, cmd.Command, re.String())
+			allowed := writeWordExceptions[cmd.Command]
+			for i, re := range pats {
+				if !re.MatchString(lower) {
+					continue
 				}
+				if allowed != "" && forbidden[i] == allowed {
+					continue
+				}
+				t.Errorf("%s/%s: %q contains %q", spec.Type, platform, cmd.Command, re.String())
 			}
+		}
+	}
+}
+
+// An exception is only readable while it is load-bearing. One left behind
+// after its command changed is a permission granted to nobody, which is how a
+// short list stops being read — the same argument as the unused-allowlist
+// test above.
+func TestEveryWriteWordExceptionIsStillNeeded(t *testing.T) {
+	sent := map[string]bool{}
+	for _, spec := range Builtin() {
+		for _, cmd := range spec.Commands {
+			sent[cmd.Command] = true
+		}
+	}
+	for cmd, word := range writeWordExceptions {
+		if !sent[cmd] {
+			t.Errorf("%q has a write-word exception but no spec sends it; remove it", cmd)
+			continue
+		}
+		re := regexp.MustCompile(`\b` + regexp.QuoteMeta(word) + `\b`)
+		if !re.MatchString(strings.ToLower(cmd)) {
+			t.Errorf("%q is excepted for %q but no longer contains it; remove the exception", cmd, word)
 		}
 	}
 }

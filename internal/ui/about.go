@@ -26,6 +26,7 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
@@ -36,6 +37,11 @@ import (
 const (
 	aboutLogoWidth  float32 = 420
 	aboutLogoHeight float32 = 200
+
+	// Tall enough for the logo, the three heading lines and three detail
+	// rows without scrolling. The scroll is the overflow path for a host
+	// that reports more than that, not the normal case.
+	aboutDialogHeight float32 = 600
 )
 
 // ShowAbout opens the About box over w.
@@ -65,15 +71,24 @@ func ShowAbout(w fyne.Window, info AboutInfo) {
 	// The details go in a form-shaped grid rather than one long label, so
 	// a long path wraps in its own column instead of pushing the labels
 	// out of alignment.
+	//
+	// Built here rather than through formOf, which wraps its grid in a
+	// VScroll. That is right for a launch dialog, which is taller than
+	// the window it opens in, and wrong here: a scroll container's
+	// minimum size is small, and a VBox gives every child exactly its
+	// minimum, so the whole details block collapsed to one visible row
+	// with a scrollbar and the rest below the fold. The scroll this box
+	// does want is around the WHOLE body, below, where the border
+	// layout stretches it instead of shrinking it.
 	if shown := info.Shown(); len(shown) > 0 {
-		pairs := make([]any, 0, len(shown)*2)
+		rows := make([]fyne.CanvasObject, 0, len(shown)*2)
 		for _, d := range shown {
 			value := widget.NewLabel(d.Value)
 			value.Wrapping = fyne.TextWrapBreak
-			pairs = append(pairs, d.Label, value)
+			rows = append(rows, widget.NewLabel(d.Label), value)
 		}
 		body.Add(widget.NewSeparator())
-		body.Add(formOf(pairs...))
+		body.Add(container.New(layout.NewFormLayout(), rows...))
 	}
 
 	status := statusLabel()
@@ -85,9 +100,13 @@ func ShowAbout(w fyne.Window, info AboutInfo) {
 	})
 	actions := container.NewHBox(copyBtn, status)
 
-	content := container.NewBorder(nil, actions, nil, nil, body)
+	// Center of a border layout, so the scroll is given the space that is
+	// left rather than asked how little it can take. Actions stay pinned
+	// at the bottom: Copy and Close must not be what scrolls away when a
+	// host reports four long paths instead of one.
+	content := container.NewBorder(nil, actions, nil, nil, container.NewVScroll(body))
 
 	d := dialog.NewCustom("About "+info.Heading(), "Close", content, w)
-	d.Resize(fyne.NewSize(aboutLogoWidth+120, 520))
+	d.Resize(fyne.NewSize(aboutLogoWidth+120, aboutDialogHeight))
 	d.Show()
 }

@@ -333,13 +333,22 @@ func (n Node) CRLF() bool { return n.TelnetCRLF == nil || *n.TelnetCRLF }
 // round trip through YAML and through Normalize.
 func (n *Node) SetCRLF(v bool) { n.TelnetCRLF = &v }
 
-// Defaults returns a node that will connect with the fewest fields filled in:
-// SSH, port 22, agent auth, trust on first use.
+// Defaults returns a node for a session being created now: SSH, port 22,
+// PASSWORD auth, trust on first use.
 //
-// It is Normalize applied to nothing, so there is exactly one place in this
-// package that decides what a default is.
+// Password rather than agent because of what a new session usually is. The
+// dialog is reached fastest by Quick Connect, Quick Connect is aimed at a
+// device rather than a server, and a switch does not run an SSH agent -- so
+// the agent default meant choosing the selector every single time, and the
+// failure when it was forgotten was an authentication error rather than a
+// visible mistake.
+//
+// Normalize still fills a BLANK auth type with agent, and the difference is
+// deliberate: a saved file that never mentions auth is not making the same
+// statement as a dialog somebody just opened, and changing what an existing
+// file means is not a default change, it is a migration.
 func Defaults() Node {
-	return Node{}.Normalize()
+	return Node{AuthType: AuthPassword}.Normalize()
 }
 
 // Normalize fills in anything left blank and trims whitespace, so a node

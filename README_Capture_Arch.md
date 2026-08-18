@@ -27,19 +27,20 @@ glance six weeks later, when the device you need is the one that quietly
 stopped answering in week two.
 
 That is why the unit here is a **(device, capture type) pair** rather than a
-device. A box whose running config came back fine and whose tech-support timed
-out is not a failed device. Reducing it to one status picks a lie either way:
-call it failed and someone investigates a device that is working, call it fine
-and the missing artifact never surfaces.
+device. A box whose running config came back fine and whose MAC table timed out
+is not a failed device. Reducing it to one status picks a lie either way: call
+it failed and someone investigates a device that is working, call it fine and
+the missing artifact never surfaces.
 
 ---
 
 ## Specs
 
-A capture type is a `Spec`: a name, a description, and a per-platform command.
+A capture type is a `Spec`: a name, a description, a retention bound, and a
+per-platform command.
 
-    Spec{Type, Description, Commands map[platform]Command}
-    Command{Command, MaxBytes, Timeout, Cost}
+    Spec{Type, Description, Keep, Commands map[platform]Command}
+    Command{Command, MaxBytes, Timeout, Cost, ModelMatch}
 
 Built-ins live in Go source, not a data file. That is deliberate and it is
 about the read-only guarantee below: a build-failing allowlist test cannot
@@ -52,25 +53,120 @@ outcome, distinct from failure, and it exists for the same reason crawl's
 every Junos box in the estate reads as a permanent failure and the failure
 column stops meaning anything.
 
+### What ships
+
+| Type | Keep | Why |
+| --- | --- | --- |
+| `running-config` | unlimited | The record. It only changes when somebody changes it. |
+| `startup-config` | unlimited | Separate from running on purpose: the interesting question is whether they differ, and that cannot be asked if they share a file. |
+| `inventory` | unlimited | Proof the model is not config-shaped — same storage, same history, different kind of state. |
+| `arp-table` | 5 | Bounded. Changes because time passed. |
+| `mac-table` | 5 | Bounded, and the one type that needs a per-model gate. |
+
+The first three are the original set. The last two arrived later and are the
+reason two things exist that did not before: **retention**, because a type that
+differs on every read has no natural stopping point, and **applicability
+gating**, because a MAC table is a question a router cannot answer.
+
+`show tech-support` was a builtin and was deliberately removed. It became one
+tick against a whole estate the moment the type picker became a check group,
+which is a diagnostic collection nobody asked for. Its two allowlist entries
+went with it, because the allowlist test fails on a permission granted to
+nobody.
+
+### Retention
+
+`Keep` bounds how many distinct versions of a type the store holds **per
+device**. Zero means unlimited and is the default, so every spec written before
+retention existed keeps its behaviour without being edited. A config backup that
+silently discards history is not a backup.
+
+It is a property of the type rather than the platform. What makes a capture
+worth keeping forever is what it is, not which vendor produced it.
+
+Per (device, type) rather than global, because pruning happens inside one type
+directory and a global count would mean one busy device evicting another
+device's history.
+
+`Store.Put` takes the count explicitly rather than reading it off a spec — the
+store does not import the spec table, and a caller that wants a different bound
+for its own type says so.
+
 ### Cost
 
 `Cost` is `CostCheap` or `CostExpensive`, and it drives two things.
 
-Within a device, cheap specs run first. A wedged `show tech-support` must not
-be the reason a running config was never collected from a session the engine
-already had open.
+Within a device, cheap specs run first. A wedged command must not be the reason
+a running config was never collected from a session the engine already had open.
 
 Across the run, expensive commands take a **second, smaller concurrency lane**
 — default one at a time, fleet-wide. Concurrency five is fine for reading
-configs and is not fine for pulling tech-support bundles off five chassis at
-once. That is the "never hang a device" rule biting, and it bites here rather
-than at LLDP sizes.
+configs and is not fine for pulling diagnostic bundles off five chassis at once.
+That is the "never hang a device" rule biting, and it bites here rather than at
+LLDP sizes.
+
+**No shipped type uses the expensive lane today.** The one that did was
+`tech-support`, and it was removed. The machinery stays, guarded by a test that
+fails if an expensive builtin comes back quietly, because the next command that
+needs it will need it during an incident and that is the wrong time to be
+rebuilding a concurrency lane.
 
 A spec's own `Timeout` and `MaxBytes` override the session defaults, via
-`netexec.RunWith`. Without that, one session carrying both a config and a
-tech-support has to be sized for the larger, which removes the bound exactly
-where it matters. The alternative — a fresh login per capture type — costs a
-handshake per type per device and was rejected.
+`netexec.RunWith`. Without that, one session carrying both a config and
+something far larger has to be sized for the larger, which removes the bound
+exactly where it matters. The alternative — a fresh login per capture type —
+costs a handshake per type per device and was rejected.
+
+---
+
+## Applicability
+
+"Not applicable" now arrives three ways, and the run model has to keep them
+apart because they mean different things to whoever reads the table.
+
+**No command for the platform.** The oldest case: `startup-config` on Junos.
+Known before the device is dialed.
+
+**The model gate.** `Command.ModelMatch` is a regex tested against the
+fingerprint's version output, which `netexec` already retains. It exists because
+a platform key names a NOS and not a chassis: every Junos box answers to
+`juniper_junos` whether or not it has a bridge table, so `show
+ethernet-switching table brief` would otherwise be sent to every MX in the
+estate. The pattern is anchored on a digit — `\b(qfx|ex)[0-9]` — so the word
+"ex" in a hostname cannot satisfy it.
+
+**The refusal.** `netexec.LooksLikeRejection`, plus an empty-output check, run
+against the output *before* it reaches `Store.Put`. Without them the store
+accepts `% Invalid input detected` as a healthy 40-byte artifact, which then
+dedups to Unchanged forever and reads as a clean row in every subsequent run.
+The rejection check is bounded — a short, few-line output only — so a
+configuration that happens to contain the word "invalid" is never mistaken for
+a refusal.
+
+### Why Junos is gated and Cisco is not
+
+This asymmetry is deliberate and it is the one design decision the MAC table
+forced.
+
+Junos gets a positive `ModelMatch` because the qualifying set is **closed**: QFX
+and EX are the switching families, everything else is not, and that list does
+not move.
+
+Cisco IOS gets no gate even though it has the same router/switch split, because
+the Catalyst model space is **open-ended**. A positive pattern there becomes a
+regex edited on every hardware refresh, and its failure mode is the bad one: a
+switch the pattern does not recognise is silently reported not-applicable and
+never captured again, which is indistinguishable from a device that genuinely
+has no such table. So the command is sent and the refusal is caught. A refusal
+costs one command and corrects itself the moment the device changes; a missing
+pattern does neither.
+
+NX-OS needs neither gate. Every Nexus is a switch.
+
+`Result.Command` is set **after** the model gate rather than before it, so the
+two are separable in the table: a model-skipped row carries no command, a
+refused row carries the command that was sent. That distinction is the whole
+reason to keep the gates as two mechanisms rather than one.
 
 ---
 
@@ -88,6 +184,14 @@ The second is an independent word-boundary regex scan. An earlier
 `strings.Contains` version matched "format" inside "information" — and a
 matcher that crude does not get fixed, it gets edited until it stops
 complaining.
+
+That scan carries one documented exception. Junos ARP is read as `show arp
+no-resolve`, and a hyphen is a word boundary, so the guard's `\bno\b` pattern
+flags it as a configuration command. Dropping the flag is the wrong fix — Junos
+then attempts a reverse lookup per ARP entry and a fast read becomes one bounded
+by a resolver. The exception names the exact string and the token it excuses, in
+the same shape as the existing `set` carve-out, so permitting `no-resolve` does
+not permit `no ip routing`.
 
 Both are backed by `internal/fakedev`, whose `Server.Asked()` records what
 actually went on the wire. An allowlist over the spec table is an intention;
@@ -113,6 +217,27 @@ run that stored nothing and a run that never happened must not look identical.
 Same-second captures get a `-N` suffix. Timestamps are
 `2006-01-02T15-04-05Z` — no colons, because the store has to survive a
 filesystem that dislikes them.
+
+### Pruning
+
+When a type declares a `Keep`, `Put` prunes that one type directory after the
+write. Three properties are load-bearing.
+
+**It orders by the history, not by the filename.** Same-second captures are
+`<stamp>-1.txt` and `-` sorts before `.`, so a filename sort would delete the
+capture it was asked to keep.
+
+**History is rewritten atomically first, then files are unlinked.** A crash
+between the two leaves an unreferenced file, which the next sweep removes. The
+other order leaves history pointing at files that are gone.
+
+**`Artifact.PruneErr` is non-fatal.** Windows can refuse to unlink a file
+something else has open, and a capture that was collected and stored correctly
+must not be reported as failed because a retention sweep could not finish. The
+next run prunes it.
+
+The history keeps its full record either way. Retention removes artifacts, never
+the account of what was collected and when.
 
 A slug collision between two genuinely different canonical names is a **hard
 error**. A case-only difference is the same device.
@@ -303,6 +428,22 @@ port-forwarded onto localhost.
 **Agent authentication is unreachable.** `sshcore` implements it — the auth
 chain is agent, key, password, keyboard-interactive — but `dial.Static` never
 sets `UseAgent`, so neither CLI can use it.
+
+**Search over the bounded types is literal only.** `storesearch` scopes a search
+to a type, so "which port is this MAC on" is already answerable from the store —
+but the matcher compares bytes, and a MAC address is written `0011.2233.4455`,
+`00:11:22:33:44:55` or `00-11-22-33-44-55` depending on who printed it. One
+query therefore searches one vendor's spelling. A format-aware matcher for MAC,
+IP and ASN is the scoped fix and the `Matcher` seam exists for it; until then
+the honest description of MAC search is that it works if you type the address
+the way the device does.
+
+**The run table's shape assumes Unchanged is the common outcome.** True for the
+first three types, and inverted for the last two: `arp-table` and `mac-table`
+differ on nearly every read, so a run with them selected is mostly Stored. The
+counters are still correct — nothing is miscounted — but the visual weighting
+was chosen when Stored meant "something happened", and it no longer only means
+that.
 
 **Diffing is not here.** The store keeps raw text and content hashes; it does
 not compare captures. That is deliberate for v1 and it is the line that keeps

@@ -139,6 +139,7 @@ func ShowMapDialog(w fyne.Window, dir string, onOpen func(MapLaunch)) {
 		}, w)
 		d.Resize(fyne.NewSize(620, 460))
 		d.Show()
+		EnterConfirms(w, content, d.Confirm)
 	}
 	show()
 }

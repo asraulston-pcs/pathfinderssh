@@ -36,6 +36,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -320,7 +321,7 @@ func (e *Engine) visit(ctx context.Context, d Device) []Result {
 			continue
 		default:
 		}
-		out = append(out, e.one(ctx, sess, id, info, fp.Name, s))
+		out = append(out, e.one(ctx, sess, id, info, fp, s))
 	}
 	e.cfg.Emit.Send(capturerun.Event{Kind: capturerun.KindDeviceDone,
 		Identity: id, Name: info.Canonical, Platform: fp.Name})
@@ -434,7 +435,8 @@ func (e *Engine) bindAnswered(canonical, answered string) {
 // canonical while device events use the identity is precisely the crawlrun bug
 // this package's header describes — one device, two rows, the platform column
 // blank because the stamp never reached rows keyed under the other string.
-func (e *Engine) one(ctx context.Context, sess *netexec.Session, id string, info DeviceInfo, platform string, s Spec) Result {
+func (e *Engine) one(ctx context.Context, sess *netexec.Session, id string, info DeviceInfo, fp *netexec.Platform, s Spec) Result {
+	platform := fp.Name
 	res := Result{Device: info.Canonical, Identity: id, Type: s.Type, Platform: platform}
 
 	cmd, ok := s.For(platform)
@@ -444,6 +446,23 @@ func (e *Engine) one(ctx context.Context, sess *netexec.Session, id string, info
 			Identity: id, Type: s.Type, Platform: platform})
 		return res
 	}
+	// A platform key is a NOS, not a chassis. When the command only
+	// applies to part of the platform's hardware, the fingerprint's
+	// version output is what tells them apart — and it is already in hand,
+	// so this costs no extra round trip.
+	//
+	// Checked before res.Command is set, so a device declined here reports
+	// no command at all — the same shape as a platform with no entry for
+	// this type. Result.Command means "what was sent", which is also what
+	// separates this outcome from a refusal: a refused capture carries the
+	// command, because the device really was asked.
+	if cmd.ModelMatch != nil && !cmd.ModelMatch.MatchString(fp.VersionOutput) {
+		res.NotApplicable = true
+		e.cfg.Emit.Send(capturerun.Event{Kind: capturerun.KindNotApplic,
+			Identity: id, Type: s.Type, Platform: platform})
+		return res
+	}
+
 	res.Command = cmd.Command
 
 	if cmd.Cost == CostExpensive {
@@ -472,7 +491,26 @@ func (e *Engine) one(ctx context.Context, sess *netexec.Session, id string, info
 		return res
 	}
 
-	art, err := e.cfg.Store.Put(info, s.Type, cmd.Command, time.Now().UTC(), []byte(out))
+	// A refused command is not a transport error: the device replied and
+	// returned to its prompt, so err is nil and out holds a perfectly valid
+	// string that means "no". Storing it would file that refusal as an
+	// artifact, dedup it to unchanged on every later run, and render as a
+	// healthy row forever. An empty reply is the same problem with nothing
+	// to read — the shape a device with no such subsystem produces.
+	//
+	// Reporting these as not-applicable is deliberately louder than
+	// storing them. A type that shows "n/a" against a device that plainly
+	// should support it is a visible prompt to look; a stored refusal is
+	// not, and it also becomes the baseline the next real capture is
+	// diffed against.
+	if netexec.LooksLikeRejection(out) || strings.TrimSpace(out) == "" {
+		res.NotApplicable = true
+		e.cfg.Emit.Send(capturerun.Event{Kind: capturerun.KindNotApplic,
+			Identity: id, Type: s.Type, Platform: platform})
+		return res
+	}
+
+	art, err := e.cfg.Store.Put(info, s.Type, cmd.Command, time.Now().UTC(), []byte(out), s.Keep)
 	if err != nil {
 		res.Err = fmt.Errorf("store: %w", err)
 		e.cfg.Emit.Send(capturerun.Event{Kind: capturerun.KindCaptureFail,

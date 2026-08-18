@@ -24,6 +24,24 @@
 // same on disk, and the storage saving would have been paid for with a hole in
 // the record — which is the worse trade for a backup.
 //
+// # Why some types are pruned and history stops being append-only
+//
+// Dedup is the whole retention story for a config, because a config only
+// produces a file when something changed. It is no story at all for a table
+// that is different every time it is read: an ARP capture writes a file on
+// every run forever. So Put takes a keep count, and a type that declares one
+// holds its newest N versions and drops the rest.
+//
+// Pruning a file means history.jsonl has to lose the lines that name it.
+// Leaving them would be the cheaper edit and it is wrong: the store view
+// builds its version list straight from history and reads the file each line
+// names, so an orphaned line is a row that errors when clicked. History
+// therefore gets truncated to the entries at or after the oldest surviving
+// file — it stays ordered and append-only in the only sense the readers
+// depend on, but it is no longer a complete record for a pruned type. That is
+// the trade, and it is why keep is zero everywhere it is not explicitly
+// wanted.
+//
 // # Why the directory is a slug and device.json holds the truth
 //
 // The canonical name comes from a device prompt or a neighbor's claim. Nothing
@@ -70,6 +88,18 @@ type Artifact struct {
 	// Unchanged reports that the content matched the previous capture and
 	// no new file was written.
 	Unchanged bool
+
+	// PruneErr is a non-fatal retention failure. The capture itself
+	// succeeded and the content is safely on disk — this reports only
+	// that older versions could not be removed.
+	//
+	// It is a field rather than a returned error because failing a
+	// capture over it would be backwards: the likeliest cause is Windows
+	// refusing to unlink a file the store view has open, and losing
+	// tonight's ARP table because last week's is being read is not a
+	// trade anyone would choose. The next successful prune sweeps
+	// whatever this one left, so a transient lock heals itself.
+	PruneErr error
 }
 
 // DeviceInfo is what device.json holds — enough to prove which device a
@@ -99,7 +129,14 @@ type HistoryEntry struct {
 type Store interface {
 	// Put stores one capture. Implementations must be safe for concurrent
 	// use across different devices.
-	Put(dev DeviceInfo, typ, command string, at time.Time, content []byte) (Artifact, error)
+	//
+	// keep bounds how many distinct versions of this (device, type) to
+	// retain; zero means unlimited. It is an explicit parameter rather
+	// than something the store looks up, because a store that resolves
+	// capture types holds a second opinion about them — and rather than
+	// an option a new implementation can quietly ignore, because a store
+	// that silently retains everything is a disk that fills.
+	Put(dev DeviceInfo, typ, command string, at time.Time, content []byte, keep int) (Artifact, error)
 	// History returns the recorded attempts for a device and type, oldest
 	// first.
 	History(canonical, typ string) ([]HistoryEntry, error)
@@ -163,8 +200,9 @@ func Slug(canonical string) (string, error) {
 	return s, nil
 }
 
-// Put stores one capture, writing a file only when the content is new.
-func (s *FileStore) Put(dev DeviceInfo, typ, command string, at time.Time, content []byte) (Artifact, error) {
+// Put stores one capture, writing a file only when the content is new, and
+// prunes to the newest keep versions when keep is positive.
+func (s *FileStore) Put(dev DeviceInfo, typ, command string, at time.Time, content []byte, keep int) (Artifact, error) {
 	if strings.TrimSpace(typ) == "" {
 		return Artifact{}, fmt.Errorf("capture: empty capture type")
 	}
@@ -230,7 +268,106 @@ func (s *FileStore) Put(dev DeviceInfo, typ, command string, at time.Time, conte
 	if err := appendHistory(typeDir, entry); err != nil {
 		return Artifact{}, err
 	}
+	// Only the stored path prunes, for cost rather than for safety: an
+	// unchanged attempt wrote no file, so the surviving set is whatever it
+	// already was and the work would be a directory read for nothing.
+	art.PruneErr = pruneType(typeDir, keep)
 	return art, nil
+}
+
+// pruneType reduces one type directory to its newest keep versions.
+//
+// Order comes from history and never from the filenames. A same-second second
+// capture is stored as "<stamp>-1.txt", and "-" sorts BEFORE "." in every byte
+// ordering, so a lexical sort puts the newer file first — a prune built on
+// ReadDir would delete the capture it was asked to keep.
+//
+// History is a sequence of runs, one file per run, newest last: an unchanged
+// attempt can only ever name the newest stored file, because that is what it
+// was compared against. So the entries to drop are always a prefix, and one
+// cut index describes the whole change.
+//
+// The write order is deliberate. History is rewritten first and files are
+// unlinked second, so an interruption between them leaves files that nothing
+// references — invisible to every reader, and swept by the next prune because
+// the sweep works from the directory listing. Doing it the other way round
+// leaves history naming files that are gone, which is the one failure a
+// reader cannot recover from.
+func pruneType(typeDir string, keep int) error {
+	if keep <= 0 {
+		return nil
+	}
+	entries, err := readHistory(typeDir)
+	if err != nil {
+		return err
+	}
+	// No history is no basis to judge anything on disk, so nothing is
+	// swept on the strength of a missing index file.
+	//
+	// This does not fully protect a store whose history was deleted by
+	// hand, because Put appends before it prunes and the sweep would then
+	// see one entry and call the rest orphans. What protects the data
+	// that matters is that keep is zero for every type worth keeping: a
+	// type only becomes sweepable by declaring its own history disposable.
+	if len(entries) == 0 {
+		return nil
+	}
+
+	survive := map[string]bool{}
+	cut := 0
+	for i := len(entries) - 1; i >= 0; i-- {
+		f := entries[i].File
+		if f == "" {
+			continue
+		}
+		if survive[f] {
+			continue
+		}
+		if len(survive) == keep {
+			cut = i + 1
+			break
+		}
+		survive[f] = true
+	}
+
+	if cut > 0 {
+		var buf strings.Builder
+		for _, e := range entries[cut:] {
+			line, err := json.Marshal(e)
+			if err != nil {
+				return err
+			}
+			buf.Write(line)
+			buf.WriteByte('\n')
+		}
+		if err := writeFileAtomic(filepath.Join(typeDir, "history.jsonl"), []byte(buf.String())); err != nil {
+			return fmt.Errorf("capture: rewrite history for %s: %w", typeDir, err)
+		}
+	}
+
+	// Sweep every capture file history no longer names. This covers the
+	// versions just cut and any left behind by an interrupted or refused
+	// prune, which is what makes a failure here self-healing rather than
+	// permanent.
+	dir, err := os.ReadDir(typeDir)
+	if err != nil {
+		return err
+	}
+	var failed []string
+	for _, e := range dir {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".txt") || survive[e.Name()] {
+			continue
+		}
+		if err := os.Remove(filepath.Join(typeDir, e.Name())); err != nil && !os.IsNotExist(err) {
+			failed = append(failed, e.Name())
+		}
+	}
+	if len(failed) > 0 {
+		sort.Strings(failed)
+		return fmt.Errorf("capture: could not remove %d pruned file(s) in %s: %s",
+			len(failed), typeDir, strings.Join(failed, ", "))
+	}
+	return nil
 }
 
 // History returns every recorded attempt, oldest first. A device or type that

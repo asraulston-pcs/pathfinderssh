@@ -1,380 +1,154 @@
 # Quickstart
 
-Vault setup, then one worked example for each `cmd/` binary. Worked against a
-dynamips lab reachable at `192.168.100.2` with hostnames under `local.lab` —
-substitute your own seed and domain.
+PathfinderSSH is a terminal, a discovery crawler, a configuration store and a
+map, in one program on your laptop. There is no server to stand up, no agent to
+install on a device, and nothing is written to your network — every command it
+sends is a read.
 
-Four binaries:
+This walkthrough takes one device you can already reach and turns it into a
+mapped network with a configuration baseline you can search. It takes about ten
+minutes.
 
-    cmd/pfvault    credential vault management
-    cmd/reach      run commands on one device, non-interactive
-    cmd/crawl      walk the topology from a seed, write map.json
-    cmd/pfterm     interactive terminal (SSH / telnet / serial)
+## The order matters
 
----
+Each step proves something the next one assumes:
 
-## 0. Build
+1. **Add a session for one device** — a seed you know is reachable.
+2. **Connect to it.** This proves the address, the credentials and the
+   transport before anything larger depends on them.
+3. **Put those credentials in the vault**, so the crawl and the capture can use
+   them without being handed a password each time.
+4. **Crawl from that seed.** The crawler logs in, reads neighbours, and walks
+   outward.
+5. **Import the map into the session tree.** Every device found becomes a
+   session you can open.
+6. **Capture** running-config and inventory across those sessions.
+7. **Search** the captures, and open the map whenever you want it.
 
-```sh
-go build ./cmd/pfvault ./cmd/reach ./cmd/crawl
-go build ./cmd/pfterm          # needs cgo + a C toolchain + a display
-```
+Most first-run problems are step 2 wearing a disguise: a crawl that reaches
+nothing is usually a credential or a transport question, not a crawl question.
+Doing step 2 on its own is what keeps those separate.
 
-`pfterm` is the only one that pulls Fyne. The other three are pure Go and will
-build anywhere.
+## 1. Add a session for the seed
 
-If `pfterm` starts and renders nothing on Crostini, the usual cause is the
-swrast fallback rather than the app:
+Use the **+** button under the session tree. The only fields that matter now
+are the name, the host and the transport.
 
-```sh
-LIBGL_ALWAYS_SOFTWARE=1 ./pfterm -ssh admin@192.168.100.2 -legacy
-```
+Pick a seed with a wide view of the network. A core or distribution device
+knows about far more neighbours than an access switch does, so the crawl
+reaches more of the estate from fewer hops.
 
----
+## 2. Connect
 
-## 1. Vault setup
+Open the session. If you land on a prompt, everything downstream will work.
 
-The vault lives at `~/.pathfinderssh/vault.json` by default. `init` creates the
-directory.
+If you do not:
 
-```sh
-./pfvault init
-# new vault master password:
-# confirm master password:
-# created /home/you/.pathfinderssh/vault.json
-```
+- **Authentication failed** — the credentials are wrong, or the device wants
+  keyboard-interactive and you supplied a key. Try the username and password
+  directly in the session first.
+- **Connection refused or timed out** — the address or the port, not the
+  credentials.
+- **No matching key exchange method / no matching cipher** — the device is
+  older than the defaults. Tick **Allow legacy KEX/cipher/MAC** on the
+  session's Advanced tab. See [Sessions](#sessions).
 
-Minimum 8 characters. The master password is never written anywhere — Argon2id
-derives the AES-256 key from it at unlock, and a wrong password is detected by
-GCM authentication failure rather than by a stored hash.
+## 3. Add the credentials to the vault
 
-`pfvault init` is not the only route: `cmd/pathfinder` offers to create a vault
-on first run when none exists, and its Vault menu offers again whenever the file
-is missing. Declining is a legitimate answer — a session can carry its own
-credentials, and a crawl or capture accepts a static username and password from
-its launch form. What a vault buys is unattended work, where each device is
-resolved against stored credentials instead of one password typed by hand.
+**Vault → Manage credentials**. Add the username and password that just
+worked, and make it the default so runs that name no credential still have one.
 
-### Add credentials
+The vault is a single encrypted file. A crawl or a capture asks it for a
+credential per device, so you set this up once instead of typing it per run.
+See [Credentials and the vault](#vault).
 
-Two credentials make a ladder: a key tried first, a password as fallback.
+## 4. Crawl from the seed
 
-```sh
-./pfvault add -name lab-key -user admin -key ~/.ssh/id_ed25519 -tag lab -priority 10
-./pfvault add -name lab-pw  -user admin                        -tag lab -priority 20
-# password for admin@lab-pw:
-```
+**Crawl** on the toolbar. Three fields matter:
 
-Lower priority runs first. **Give both credentials the same tag.** `-cred-tag`
-requires a credential to carry *all* the tags passed, so two credentials with
-different tags have no single `-cred-tag` value that selects both — the second
-rung is silently never offered. This has bitten before.
+- **Seeds** — the address you just connected to.
+- **Legacy KEX and ciphers** — tick it if that session needed it.
+- **Map output**, on the **Output** tab — a path you will remember.
 
-No secret is ever a command-line argument. Everything is prompted, or read as
-one line from a pipe:
+Depth is how many hops from the seed the crawler may travel; the default of 3
+covers a small estate comfortably. Everything else can be left alone for a
+first run.
 
-```sh
-echo "$PW" | ./pfvault add -name lab-pw -user admin -tag lab -priority 20
-```
+![The Crawl tab of the crawl dialog](images/crawl_dialog.png)
 
-### Check it
+**Map output has no default, and blank means no map is written.** The run looks
+exactly the same either way: devices are reached, the table fills in, the run
+reports success — and there is nothing at the end. The map is what the next two
+steps are built from, so a crawl without it has to be run again from scratch.
+Fill it in before you press Start.
 
-```sh
-./pfvault list
-```
+![The Output tab, where Map output lives](images/crawl_output.png)
 
-Prints NAME, USER, AUTH, PRIO, TAGS, SCOPE, STATE. Never secrets.
+The run table fills in as devices are reached. The **Decisions** pane under it
+explains anything surprising, including devices that were unreachable by name
+and retried by address.
 
-### A default credential
+![A crawl in progress](images/crawl.png)
 
-A session that names no credential asks the vault what it uses when nothing is
-named. That is the answer to "I have a hundred sessions and I do not want to
-edit each one" — particularly after a map import, where every node arrives with
-no credential at all.
+## 5. Import the map into the session tree
 
-```sh
-./pfvault default lab-key    # set it
-./pfvault default            # report it — the bare form never changes anything
-./pfvault default -clear     # back to no default
-```
+**File → Import topology map**, and pick the `map.json` the crawl wrote. Give
+the folder a name — the estate, the site, the customer.
 
-`add -default` does both in one step. `list` marks the default in STATE.
+![Importing a topology map](images/import_map2.png)
 
-Two rules decide when it applies, and both are deliberate:
+Every discovered device becomes a session, with its address and platform
+already filled in. Importing again later merges: devices that are still there
+keep their settings, new ones are added.
 
-**The default fills a session that states no auth of its own, and stays out of
-one that does.** Any of a username, a password or a key path counts as stating
-its own. It is all-or-nothing, never field-by-field: merging would produce a
-username from one place and a password from another, a credential nobody
-assembled and nobody can debug from the screen. This is also the way back —
-**typing a username is how a session opts out.**
+**Include leaves** brings in devices a neighbour mentioned but the crawl never
+logged into. They are real devices, but nothing has confirmed how to reach
+them, so leave it off for a first import.
 
-**A credential named on the session still wins.** Naming one is a choice; the
-default is what happens in the absence of a choice, so it loses to anything the
-session says.
+## 6. Capture configurations
 
-The default applies to the session credential only, never to a jump host.
-Silently authenticating to somebody's bastion with the estate default is a
-decision nobody made.
+**Capture** on the toolbar. Now that the tree is populated, point the capture
+at the sessions rather than typing a device list:
 
-A disabled credential is skipped, and `default` refuses to set one — disabled
-means out of automatic selection, and being the default is the most automatic
-there is. It stays fetchable by name, which is what disable is meant to leave
-working.
+- **Session file** — your `sessions.yaml`.
+- **Match sessions** — `*` for everything, or a glob like `eng-*`.
+- **Types** — tick `running-config` and `inventory`. `arp-table` and
+  `mac-table` are there too, and cost nothing extra to add; they keep a rolling
+  five versions rather than a full history, because they change on their own.
+- **Store** — a directory. It is created if it does not exist.
 
-### Optional scoping
+Each device is dialled once and every selected type is read over that one
+session. Nothing is written to any device.
 
-A credential can be pinned to where it applies, so the ladder does not offer a
-datacenter credential to a lab device:
+![A finished capture](images/capture_results.png)
 
-```sh
-./pfvault add -name lab-only -user admin -tag lab -priority 10 \
-  -scope-cidr 192.168.100.0/24 -scope-domain local.lab
-```
+Run it again tomorrow and anything unchanged is recorded as unchanged rather
+than stored again, so the store becomes a history of what actually changed.
 
-Note that `-scope-platform` is currently inert on the crawl path — the
-fingerprint does not exist until the connection is up, and the neighbor claim
-that would supply a pre-dial hint is dropped at enqueue. Tracked in
-`DEFERRED.md`.
+## 7. The map, and finding things
 
-### Keyring (and what to expect on Crostini)
+The map opens in your browser from the **Map** button, any time after a crawl —
+it reads the `map.json` file, so it does not need the crawl to still be
+running. Click a node and you can connect straight to that device.
 
-```sh
-./pfvault keyring status
-```
+![The map, with a node selected](images/map_view.png)
 
-On macOS and Windows this should report `available, no entry`, and:
+**Search** greps every captured configuration in the store. Searching for an
+address, a VLAN, a neighbour or a route-map answers "where is this configured"
+across the whole estate in a few milliseconds, and a hit opens a session on the
+device that has it.
 
-```sh
-./pfvault keyring set      # prompts, unlocks the vault to verify, then files it
-```
+## Where things live
 
-means `crawl -vault` runs with no human present.
+| What | Where |
+| --- | --- |
+| Sessions | `~/.pathfinderssh/sessions.yaml` |
+| Vault | `~/.pathfinderssh/vault.json` |
+| Settings | `~/.pathfinderssh/settings.json` |
+| Transcripts | `~/.pathfinderssh/logs` |
+| Captures | wherever you set **Store** |
+| Maps | wherever you set **Map output** |
 
-**On Crostini, expect `state  unavailable`.** The Linux backend is the D-Bus
-Secret Service, and the base container has no keyring daemon and often no user
-D-Bus session. Nothing breaks — `Master()` falls through to the environment
-variable and then to a prompt, and prints a one-line note on stderr. For
-scripted crawls on this box:
-
-```sh
-export PATHFINDER_VAULT_PASSWORD='...'
-```
-
-That is a plaintext path by another name, which is why it is last in the
-preference order. Use it on the Chromebook, not on anything that matters.
-
-If you want to try the real thing: `sudo apt install gnome-keyring`, then run
-under `dbus-run-session -- ./pfvault keyring status`. It is fiddly and it is
-not a prerequisite for anything.
-
-To take the keyring out of the loop for one run without destroying the entry:
-
-```sh
-PATHFINDER_NO_KEYRING=1 ./pfvault keyring status
-```
-
----
-
-## 2. cmd/reach — one device, non-interactive
-
-Fingerprint only. The cheapest possible proof that transport, auth and prompt
-detection all work:
-
-```sh
-./reach -host 192.168.100.2 -user admin -p -legacy -fingerprint-only
-```
-
-Run commands. Each `-c` is exactly one command — there is no comma splitting:
-
-```sh
-./reach -host 192.168.100.2 -user admin -p -legacy -fingerprint \
-  -c "show version" \
-  -c "show lldp neighbors"
-```
-
-`-fingerprint` detects the platform and picks the paging-disable command for
-you. Set it explicitly instead if you would rather not probe:
-
-```sh
-./reach -host 192.168.100.2 -user admin -p -legacy \
-  -paging "terminal length 0" -c "show ip interface brief"
-```
-
-Through a jump host — the path you actually use to reach the containerlab box:
-
-```sh
-./reach -host 192.168.255.1 -user admin -p \
-  -jump you@jumphost -jump-key ~/.ssh/id_ed25519 \
-  -fingerprint -c "show ip ospf neighbor"
-```
-
-Useful flags: `-agent` (on by default, tried first), `-hostkey strict|tofu|insecure`,
-`-enable` for privileged mode, `-timeout`.
-
-`-legacy` widens KEX/cipher/MAC negotiation for old gear. A dynamips c7200 will
-need it; cEOS will not.
-
----
-
-## 3. cmd/crawl — walk the topology
-
-Simplest form, using the vault:
-
-```sh
-./crawl -seed 192.168.100.2 -vault ~/.pathfinderssh/vault.json \
-  -domain local.lab -depth 3 -o lab-map.json -v
-```
-
-`-domain` does double duty: it is stripped from node names in the map, and
-appended when resolving bare neighbor names. `-depth 0` crawls the seeds only.
-
-Keep the crawl inside the lab and let everything else map as an undialed leaf:
-
-```sh
-./crawl -seed 192.168.100.2 -vault ~/.pathfinderssh/vault.json \
-  -domain local.lab -allow-domain local.lab \
-  -depth 4 -concurrency 5 -o lab-map.json -v
-```
-
-Without a vault, single credentials work too:
-
-```sh
-./crawl -seed 192.168.100.2 -user admin -password -legacy \
-  -domain local.lab -o lab-map.json -v
-```
-
-Keep discovery's host keys out of your personal `known_hosts` — first contact
-auto-accepts and persists, and you do not want that mixed in with keys you
-verified by hand:
-
-```sh
-./crawl -seed 192.168.100.2 -vault ~/.pathfinderssh/vault.json \
-  -known-hosts ~/.pathfinderssh/discovery_known_hosts \
-  -domain local.lab -o lab-map.json -v
-```
-
-**Do not pass `-cred-tag` on a first run.** See the tag note in the vault
-section — it is the fastest way to make a working ladder look broken.
-
-Credential-resolution flags worth knowing: `-max-creds` caps attempts per
-device, `-cred-breaker` parks a credential after it is rejected by that many
-distinct devices (a lockout guard, not an optimization). `-exclude` takes
-substrings matched against platform, hostname and sysname.
-
-Output is `map.json` in the same shape Secure Cartography emits, so existing
-viewers load it unchanged.
-
----
-
-## 4. cmd/crawlui — the same crawl, in a window
-
-Same parameters as section 3. Every flag there works here and means the same
-thing, because both commands build their crawler through `crawldial.Build` from
-the same `Params`. They are not documented twice on purpose — two lists of the
-same flags drift, and a dropped one is invisible in a map.
-
-Look at it before pointing it at anything:
-
-```sh
-go run ./cmd/crawlui -demo
-```
-
-That plays a scripted run with no vault, no network and no devices, exercising
-every state the table can show. It is the fastest way to see whether the window
-is behaving, and it needs nothing set up.
-
-Against the lab:
-
-```sh
-go run ./cmd/crawlui \
-  -seed 192.168.100.2 -vault ~/.pathfinderssh/vault.json \
-  -domain local.lab -allow-domain local.lab -depth 4 \
-  -o lab-map.json -save-run ~/.pathfinderssh/last-run.json -v
-```
-
-Flags that exist only here:
-
-    -demo             scripted run, no lab required
-    -demo-step        pace it (default 40ms)
-    -save-run         save this run for the next comparison
-    -last-run         load a previous run into the comparison tab
-    -strict-hostkey   require keys already in known_hosts
-
-`-save-run` and `-last-run` are the pair worth using. Save one run, pass it as
-`-last-run` on the next, and the "Since last run" tab shows what appeared,
-what stopped answering, what changed platform, and which devices started
-spending more credential attempts than they used to. Without a saved run that
-tab is simply empty.
-
-Note there is no insecure host-key flag. `-strict-hostkey` requires keys you
-already have; the default trusts an unknown key on first contact and records
-it, which is the normal case for discovery. A key that *changed* fails closed
-either way, and turning that check off is deliberately a thing you can only do
-from the CLI.
-
-Reading the window:
-
-- **Reached / Failed / Not dialed** — the third is the one to look at. Those
-  devices were never connected to, and they appear in the map as leaves that
-  look exactly like real edge devices. Click the counter to see them.
-- **Try** — `2 !` means a credential was rejected before one worked. That is a
-  real failed login against a real account.
-- **Via** — which device's neighbor table produced this row. Blank for a seed.
-- **Decisions** — should be short. If it is long, something systemic is off.
-
-The Stop button cancels the crawl, and Ctrl-C does the same thing rather than
-killing the process. Devices abandoned that way are reported with a reason
-rather than dropped.
-
----
-
-## 5. cmd/pfterm — the terminal
-
-This is the manual smoke harness for the ported widget, not a finished app.
-
-SSH:
-
-```sh
-./pfterm -ssh admin@192.168.100.2 -legacy
-```
-
-Telnet:
-
-```sh
-./pfterm -telnet 192.168.100.2
-```
-
-Serial — list ports first:
-
-```sh
-./pfterm -ports
-./pfterm -serial /dev/ttyUSB0 -baud 9600
-```
-
-Other flags: `-key`, `-insecure` (skip host-key verification; disposable lab
-gear only), `-light`, `-font`, `-log` to write a transcript.
-
-**Leave `-rowoffset` and `-coloffset` at 0.** The flag still defaults
-`-rowoffset` to 2, which is wrong — that value was compensating for a
-gutter-width bug that has since been fixed, and `ui.Defaults()` is correctly
-0/0. Any non-zero offset now is evidence of a measurement bug, not
-configuration. Tracked in `DEFERRED.md`.
-
-The harness docstring carries the by-hand checklist: reflow on resize,
-scrollback reaching true top, alternate-screen paint under `btop` or `vi`,
-wide-character columns, and a dropped link surfacing.
-
----
-
-## A wrinkle worth knowing
-
-The three host-key flags do not agree with each other:
-
-    reach     -hostkey strict|tofu|insecure
-    crawl     -insecure-hostkey
-    pfterm    -insecure
-
-Three spellings of one policy, inherited from three different starting points.
-They collapse when the binaries merge into `cmd/pathfinder`; until then, check
-`-h` rather than guessing.
+**Settings → Paths** shows the paths this build actually resolved, with a Copy
+button. That page answers "which file is it really using", which is a different
+question from "which file should it be using".

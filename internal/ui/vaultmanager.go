@@ -459,6 +459,7 @@ func (m *vaultManager) showForm(title string, f CredentialForm, id string, save 
 		}, m.win)
 		d.Resize(fyne.NewSize(640, 470))
 		d.Show()
+		EnterConfirms(m.win, content, d.Confirm)
 	}
 	show()
 }
@@ -504,6 +505,7 @@ func (m *vaultManager) changeMaster() {
 		}, m.win)
 		d.Resize(fyne.NewSize(460, 240))
 		d.Show()
+		EnterConfirmsForm(m.win, items, d.Submit)
 	}
 	show()
 }

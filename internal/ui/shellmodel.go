@@ -118,6 +118,41 @@ func (r *Registry) uniqueTitleLocked(base string) string {
 	}
 }
 
+// Rename changes an instance's title, uniqued against everything else the same
+// way Add does. It returns the title actually assigned, which may carry a
+// collision suffix, and reports whether the instance was found.
+//
+// The instance's own title is excluded from the taken set before uniquing.
+// Without that, renaming a tab to what it is already called — a search re-run
+// with the same query — would collide with itself and come back as "... (2)",
+// so a tab would gain a suffix every time it was refreshed.
+func (r *Registry) Rename(id int, base string) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var self *InstanceInfo
+	for _, it := range r.items {
+		if it.ID == id {
+			self = it
+			break
+		}
+	}
+	if self == nil {
+		return "", false
+	}
+	if base == "" {
+		base = string(self.Kind)
+	}
+
+	// Uniquing reads r.items, so the instance is taken out of the running
+	// by blanking its title for the call and then taking the result.
+	self.Title = ""
+	title := r.uniqueTitleLocked(base)
+	self.Title = title
+	self.Base = base
+	return title, true
+}
+
 // Remove drops an instance. It reports whether anything was removed, so a
 // double close is detectable rather than silent.
 func (r *Registry) Remove(id int) bool {
