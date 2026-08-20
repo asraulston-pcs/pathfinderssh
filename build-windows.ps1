@@ -10,7 +10,7 @@
 #        .\build-windows.ps1 -Targets cli               # only the console tools
 #        .\build-windows.ps1 -Strip:$false              # keep symbols (debugging)
 #        .\build-windows.ps1 -Console                   # force a console on the GUI apps too
-#        .\build-windows.ps1 -Version v0.93             # override the stamped version
+#        .\build-windows.ps1 -Version v0.93.1           # override the stamped version
 #        .\build-windows.ps1 -Tags paid                 # pass build tags through
 #
 # Build deps: Go + a C compiler on PATH (Fyne needs CGO). Easiest options:
@@ -32,6 +32,10 @@
 # VERSION: stamped with -X main.version=<git describe>. The linker silently
 # ignores -X for a package with no such symbol, so it is safe to pass to every
 # target even though only cmd\pathfinder reads it today (Help > About).
+#
+# That silence cuts the other way too: -X with a WRONG value is equally quiet,
+# so the script must not invent one. With neither -Version nor git available it
+# passes no -X at all and lets the source constant stand.
 #
 # Signing: nothing here signs anything. Store-published builds are re-signed by
 # Microsoft; a direct download needs its own certificate.
@@ -56,13 +60,30 @@ Set-Location $PSScriptRoot
 $Out = "dist\windows"
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 
+# VERSION precedence: -Version, then git describe, then whatever cmd\pathfinder
+# declares in `var version`. The third case is why $Stamp exists: with no
+# version to stamp, -X is omitted entirely and the source constant is what
+# ships.
+#
+# There used to be a literal "0.93" here instead, and it was a second copy of
+# the version that WON over the one in the source. Editing `var version` then
+# had no effect on anything this script built -- silently, because the build
+# succeeds either way and only the About box disagrees. A build tree with no
+# git (an extracted zip, or git not on PATH in this session) took that path
+# every time.
+$Stamp = $true
 if ([string]::IsNullOrWhiteSpace($Version)) {
     try {
         $Version = (& git describe --tags --always --dirty 2>$null | Select-Object -First 1)
     } catch {
         $Version = ""
     }
-    if ([string]::IsNullOrWhiteSpace($Version)) { $Version = "0.93" } else { $Version = $Version.Trim() }
+    if ([string]::IsNullOrWhiteSpace($Version)) {
+        $Stamp   = $false
+        $Version = "(from source)"
+    } else {
+        $Version = $Version.Trim()
+    }
 }
 
 $env:CGO_ENABLED = "1"
@@ -133,7 +154,7 @@ foreach ($app in $list) {
     # -H windowsgui hides the background console window for a GUI app; a console
     # tool built with it loses stdout entirely, so it is applied per target.
     if ($gui -and -not $Console) { $ld += "-H"; $ld += "windowsgui" }
-    $ld += "-X"; $ld += "main.version=$Version"
+    if ($Stamp) { $ld += "-X"; $ld += "main.version=$Version" }
     $ldflags = ($ld -join " ")
 
     Write-Host ">> building $app.exe ($kind)  ldflags='$ldflags'"
