@@ -36,6 +36,35 @@ func NewHybridScrollContainer(terminal *NativeTerminalWidget) *HybridScrollConta
 	return h
 }
 
+// Mouse events are forwarded UNTRANSLATED. Every fyne.PointEvent carries both a
+// widget-local Position and a canvas-absolute AbsolutePosition, and the hit test
+// uses the absolute one (see gridCellAtAbs) precisely so that no code has to
+// know which widget the driver chose to deliver the event to. Translating the
+// local position between widget spaces here is how the offset got applied twice.
+
+// pinOffset forces this container's scroll offset back to zero.
+//
+// Scrolling here is VIRTUAL: the grid is redrawn with different content rather
+// than moved. A non-zero Offset therefore displaces the glyphs without moving
+// anything the terminal knows about, and Direction=ScrollNone does NOT prevent
+// it -- that only suppresses the scroll BARS, while the renderer still does
+// Content.Move(-Offset) unconditionally. The slack is real because the grid
+// carries a sentinel row (see setStyledRows): content MinSize is
+// (rows+1)*cellHeight, which exceeds the viewport by up to a full row, so the
+// container has genuine, invisible room to scroll into.
+func (h *HybridScrollContainer) pinOffset() {
+	if h.Scroll.Offset.IsZero() {
+		return
+	}
+	// Field only, no Refresh: container.Scroll reads Offset during layout
+	// (Content.Move(-Offset)), so zeroing it is enough and the next paint picks
+	// it up. Refreshing a container from the paint path is a per-frame side
+	// effect on the widget tree, which is not a thing to do casually in a
+	// toolkit where focus and renderer caches live in that same tree.
+	h.Scroll.Offset = fyne.NewPos(0, 0)
+	dprintf("pinOffset: reset non-zero scroll offset under virtual scrolling\n")
+}
+
 // Forward mouse events to terminal for selection
 func (h *HybridScrollContainer) MouseDown(event *desktop.MouseEvent) {
 	// Take keyboard focus on any click in the terminal body, before anything
@@ -59,7 +88,10 @@ func (h *HybridScrollContainer) MouseDown(event *desktop.MouseEvent) {
 	}
 	dprintf("HybridScrollContainer.MouseDown: Forwarding to terminal\n")
 	if h.terminal != nil {
-		// Forward directly to terminal's selection manager
+		// Any offset here is stale displacement, not scroll state; clear it
+		// before a position is resolved against the grid.
+		h.pinOffset()
+
 		h.terminal.isSelecting = true
 		if h.terminal.selection != nil {
 			h.terminal.selection.HandleMouseDown(event)
@@ -91,7 +123,7 @@ func (h *HybridScrollContainer) Dragged(event *fyne.DragEvent) {
 	dprintf("HybridScrollContainer.Dragged: Forwarding to terminal\n")
 	if h.terminal != nil && h.terminal.isSelecting {
 		if h.terminal.selection != nil {
-			h.terminal.selection.HandleDrag(event.Position)
+			h.terminal.selection.HandleDrag(event.AbsolutePosition, event.Position)
 		}
 		h.terminal.updatePending.Store(true)
 	}
@@ -116,13 +148,19 @@ func (h *HybridScrollContainer) Scrolled(event *fyne.ScrollEvent) {
 	// Let terminal handle scroll events first
 	handled := h.terminal.handleScrollEvent(event)
 
+	// Deliberately NOT forwarded to h.Scroll.Scrolled on the unhandled path.
+	// handleScrollEvent returns false in alternate-screen mode (vim, top, a
+	// pager), where the wheel belongs to the remote application - and forwarding
+	// it let the container consume the sentinel row's slack, sliding the grid up
+	// by a fraction of a row with no scroll bar to show it. Every subsequent
+	// click then resolved against a row boundary that was no longer where the
+	// glyphs were, until a re-layout (a tab switch) happened to reset it.
 	if !handled {
-		// Terminal didn't handle it, let scroll container handle it
-		dprintf("HybridScrollContainer.Scrolled: Terminal didn't handle, passing to container\n")
-		h.Scroll.Scrolled(event)
+		dprintf("HybridScrollContainer.Scrolled: Terminal didn't handle; dropping (virtual scrolling)\n")
 	} else {
 		dprintf("HybridScrollContainer.Scrolled: Terminal handled scroll event\n")
 	}
+	h.pinOffset()
 }
 
 // SCROLL BAR POSITION MANAGEMENT
@@ -156,45 +194,29 @@ func (h *HybridScrollContainer) setScrollBarPosition(percentage float32) {
 		percentage = 1
 	}
 
-	// Get the actual content size from the TextGrid
-	contentSize := h.terminal.textGrid.Size()
-	containerSize := h.Scroll.Size()
-
-	if contentSize.Height > containerSize.Height {
-		maxScrollY := contentSize.Height - containerSize.Height
-		scrollY := maxScrollY * percentage
-		h.Scroll.Offset = fyne.NewPos(0, scrollY)
-		h.Scroll.Refresh()
-
-		dprintf("setScrollBarPosition: Set scroll to %.1f (%.1f%%), maxScroll=%.1f\n",
-			scrollY, percentage*100, maxScrollY)
-	} else {
-		// Content fits in container, no scrolling needed
-		h.Scroll.Offset = fyne.NewPos(0, 0)
-		h.Scroll.Refresh()
-	}
+	// Under virtual scrolling the container itself never scrolls: position is
+	// expressed by redrawing the grid with different lines, and the visible bar
+	// is the VirtualScrollbar in the Border gutter. Moving the container's
+	// offset here would displace the glyphs out from under the hit test, so the
+	// only correct offset is zero. The percentage is retained for the callers
+	// and the log.
+	h.pinOffset()
+	dprintf("setScrollBarPosition: virtual scrolling - offset pinned at 0 (requested %.1f%%)\n",
+		percentage*100)
 }
 
 func (h *HybridScrollContainer) ScrollToBottom() {
-	contentSize := h.terminal.textGrid.Size()
-	containerSize := h.Scroll.Size()
-
-	if contentSize.Height > containerSize.Height {
-		maxScrollY := contentSize.Height - containerSize.Height
-		h.Scroll.Offset = fyne.NewPos(0, maxScrollY)
-		h.Scroll.Refresh()
-		dprintf("ScrollToBottom: Scrolled to bottom (offset=%.1f)\n", maxScrollY)
-	} else {
-		h.Scroll.Offset = fyne.NewPos(0, 0)
-		h.Scroll.Refresh()
-		dprintf("ScrollToBottom: Content fits, no scroll needed\n")
-	}
+	// The bottom of the buffer is a CONTENT position, reached by redrawing the
+	// grid, not by offsetting the container. Offsetting it here is what put the
+	// glyphs half a row above where the hit test believed they were - the
+	// sentinel row leaves exactly that much slack for it to slide into.
+	h.pinOffset()
+	dprintf("ScrollToBottom: virtual scrolling - offset pinned at 0\n")
 }
 
 func (h *HybridScrollContainer) ScrollToTop() {
-	h.Scroll.Offset = fyne.NewPos(0, 0)
-	h.Scroll.Refresh()
-	dprintf("ScrollToTop: Scrolled to top\n")
+	h.pinOffset()
+	dprintf("ScrollToTop: virtual scrolling - offset pinned at 0\n")
 }
 
 func (h *HybridScrollContainer) GetScrollPosition() float32 {
@@ -277,8 +299,11 @@ func (h *HybridScrollContainer) IsScrollBarVisible() (horizontal, vertical bool)
 func (h *HybridScrollContainer) OptimizeForVirtualScrolling() {
 	// No native Fyne scrollbar. The terminal scrolls VIRTUALLY: the TextGrid is
 	// always resized to exactly the viewport, so the inner container.Scroll never
-	// overflows and its offset code (setScrollBarPosition/ScrollToBottom/etc) is a
-	// no-op. Leaving Direction=ScrollVerticalOnly made Fyne paint its OWN vertical
+	// overflows and its offset code (setScrollBarPosition/ScrollToBottom/etc)
+	// should be a no-op -- it was NOT, because the sentinel row in setStyledRows
+	// pushes the content's MinSize one cell height past the viewport, giving the
+	// container real (and invisible) room to scroll. Those methods now pin the
+	// offset at zero instead of setting it; see pinOffset. Leaving Direction=ScrollVerticalOnly made Fyne paint its OWN vertical
 	// scrollbar over the right edge - the theme-accent bar that auto-hides on
 	// hover-out and, because it only sees the viewport-sized content (never the
 	// scrollback history), stays full-height and refuses to shrink after e.g.

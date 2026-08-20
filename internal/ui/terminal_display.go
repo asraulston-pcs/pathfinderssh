@@ -106,10 +106,11 @@ func (t *NativeTerminalWidget) performRedrawDirect() {
 func (t *NativeTerminalWidget) renderAlternateScreen(allLines []string, allAttrs [][]gopyte.Attributes) {
 	dlogf("ALTERNATE: Rendering full screen mode with %d lines", len(allLines))
 
-	// Size TextGrid to exact screen dimensions
+	// Size TextGrid to exact screen dimensions, in the grid's own cell units.
+	altCW, altCH := t.gridCellSize()
 	screenSize := fyne.NewSize(
-		float32(t.cols)*t.charWidth,
-		float32(t.rows)*t.charHeight,
+		float32(t.cols)*altCW,
+		float32(t.rows)*altCH,
 	)
 
 	t.textGrid.Resize(screenSize)
@@ -161,10 +162,11 @@ func (t *NativeTerminalWidget) renderNormalMode(allLines []string, allAttrs [][]
 	viewport := t.calculateVirtualViewport(allLines)
 	t.logViewportCalculation(viewport, len(allLines))
 
-	// Size TextGrid - POTENTIAL ISSUE: This might be too restrictive
+	// Size TextGrid in the grid's own cell units (see gridCellSize).
+	vpCW, vpCH := t.gridCellSize()
 	viewportSize := fyne.NewSize(
-		float32(t.cols)*t.charWidth,
-		float32(viewport.visibleLines)*t.charHeight,
+		float32(t.cols)*vpCW,
+		float32(viewport.visibleLines)*vpCH,
 	)
 	t.textGrid.Resize(viewportSize)
 
@@ -294,7 +296,7 @@ func (t *NativeTerminalWidget) calculateVirtualViewport(allLines []string) Virtu
 		visibleLines:  visibleLines,
 		scrollOffset:  scrollOffset,
 		maxScroll:     maxScroll,
-		contentHeight: float32(totalLines) * t.charHeight,
+		contentHeight: float32(totalLines) * t.cellHeight(),
 	}
 }
 

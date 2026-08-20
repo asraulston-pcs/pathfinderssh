@@ -36,9 +36,12 @@ type SelectionManager struct {
 	isSelecting  bool
 	hasSelection bool
 
-	// Last raw drag position (viewport pixels), reused by the auto-scroll
-	// timer to recompute the focus column/edge after each scroll step.
-	lastDragPos fyne.Position
+	// Last drag position, kept in BOTH spaces: the canvas-absolute one drives
+	// the hit test (see gridCellAtAbs), the widget-local one drives the
+	// past-the-edge test. The auto-scroll timer reuses both to recompute the
+	// focus column/edge after each scroll step.
+	lastDragPos   fyne.Position
+	lastDragLocal fyne.Position
 
 	// Auto-scroll state. autoScrollDir is -1 (up/into history), +1 (down/toward
 	// present), or 0 (off). The loop goroutine is stopped by closing stopCh.
@@ -62,10 +65,11 @@ func (sm *SelectionManager) HandleMouseDown(event *desktop.MouseEvent) bool {
 	}
 
 	sm.Clear()
-	absLine, col := sm.posToAbs(event.Position)
+	absLine, col := sm.posToAbs(event.AbsolutePosition, event.Position)
 	sm.anchorAbsLine, sm.anchorCol = absLine, col
 	sm.focusAbsLine, sm.focusCol = absLine, col
-	sm.lastDragPos = event.Position
+	sm.lastDragPos = event.AbsolutePosition
+	sm.lastDragLocal = event.Position
 	sm.isSelecting = true
 	sm.hasSelection = false
 
@@ -96,23 +100,24 @@ func (sm *SelectionManager) HandleMouseUp(event *desktop.MouseEvent) bool {
 	return true
 }
 
-func (sm *SelectionManager) HandleDrag(pos fyne.Position) bool {
+func (sm *SelectionManager) HandleDrag(abs, local fyne.Position) bool {
 	if !sm.isSelecting {
 		return false
 	}
 
-	sm.lastDragPos = pos
-	sm.updateFocusFromPos(pos)
+	sm.lastDragPos = abs
+	sm.lastDragLocal = local
+	sm.updateFocusFromPos(abs, local)
 	sm.hasSelection = true
-	sm.updateAutoScroll(pos)
+	sm.updateAutoScroll(local)
 	sm.terminal.updatePending.Store(true)
 	return true
 }
 
 // updateFocusFromPos moves the selection focus to the cell under the pointer
 // (clamped into the visible viewport), translated to an absolute line.
-func (sm *SelectionManager) updateFocusFromPos(pos fyne.Position) {
-	sm.focusAbsLine, sm.focusCol = sm.posToAbs(pos)
+func (sm *SelectionManager) updateFocusFromPos(abs, local fyne.Position) {
+	sm.focusAbsLine, sm.focusCol = sm.posToAbs(abs, local)
 }
 
 // updateAutoScroll starts or stops the auto-scroll loop based on whether the
@@ -127,7 +132,10 @@ func (sm *SelectionManager) updateAutoScroll(pos fyne.Position) {
 	}
 
 	vp, _ := sm.viewportInfo()
-	heightPx := float32(vp.visibleLines) * t.charHeight
+	// Same metric the hit test divides by, or the "pointer is past the bottom
+	// edge" test fires a row early or late.
+	_, cellH := t.gridCellSize()
+	heightPx := float32(vp.visibleLines) * cellH
 
 	switch {
 	case pos.Y < 0:
@@ -200,7 +208,7 @@ func (sm *SelectionManager) autoScrollStep() {
 
 	// Extend the selection focus to the (clamped) pointer position against the
 	// now-scrolled viewport.
-	sm.updateFocusFromPos(sm.lastDragPos)
+	sm.updateFocusFromPos(sm.lastDragPos, sm.lastDragLocal)
 	sm.hasSelection = true
 	t.updatePending.Store(true)
 }
@@ -360,7 +368,7 @@ func (sm *SelectionManager) viewportInfo() (VirtualScrollState, int) {
 // The pixel->cell mapping matches the rest of the widget; the row is clamped
 // into the visible window (so dragging past an edge pins to that edge), then
 // offset by the viewport's absolute top to yield a stable line index.
-func (sm *SelectionManager) posToAbs(pos fyne.Position) (absLine, col int) {
+func (sm *SelectionManager) posToAbs(abs, local fyne.Position) (absLine, col int) {
 	t := sm.terminal
 	vp, topAbs := sm.viewportInfo()
 
@@ -369,16 +377,18 @@ func (sm *SelectionManager) posToAbs(pos fyne.Position) (absLine, col int) {
 	// be wrong about it. See NativeTerminalWidget.gridCellAt.
 	//
 	// The fallback is the old arithmetic, for a widget with no canvas yet.
-	row, col, ok := t.gridCellAt(pos)
-	cw, ch := t.gridCellSize()
+	row, col, ok := t.gridCellAtAbs(abs)
 	if !ok {
+		// Fallback for a widget with no canvas (tests) or a lookup that did not
+		// resolve: the widget-local position with plain arithmetic.
+		cw, ch := t.gridCellSize()
 		row = 0
 		if ch > 0 {
-			row = int(pos.Y / ch)
+			row = int(local.Y / ch)
 		}
 		col = 0
 		if cw > 0 {
-			col = int(pos.X / cw)
+			col = int(local.X / cw)
 		}
 	}
 	if row < 0 {

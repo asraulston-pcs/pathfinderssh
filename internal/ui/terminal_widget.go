@@ -996,10 +996,20 @@ func (t *NativeTerminalWidget) renderNormalModeUnified(f frame, shouldAutoScroll
 	// Calculate viewport from the snapshot, not from live screen state.
 	viewport := t.viewportFromFrame(f)
 
-	// Size TextGrid to viewport
+	// Size TextGrid to viewport, in the grid's OWN cell units rather than the
+	// fontSize-ratio estimate (see gridCellSize).
+	//
+	// This looks like dead work -- container.Scroll resizes the content to
+	// MinSize().Max(size) on every layout and overwrites it -- and it was
+	// removed on exactly that reasoning. It is NOT dead: it is what marks the
+	// canvas dirty each frame. Without it the terminal painted once and then
+	// froze, with input still reaching the device and nothing appearing on
+	// screen. The granular SetCell/refreshCell path in setStyledRows is not
+	// enough on its own.
+	gcw, gch := t.gridCellSize()
 	viewportSize := fyne.NewSize(
-		float32(t.cols)*t.charWidth,
-		float32(viewport.visibleLines)*t.charHeight,
+		float32(t.cols)*gcw,
+		float32(viewport.visibleLines)*gch,
 	)
 
 	currentSize := t.textGrid.Size()
@@ -1150,7 +1160,7 @@ func (t *NativeTerminalWidget) calculateViewport(totalLines int, viewingHist boo
 		visibleLines:  visibleLines,
 		scrollOffset:  scrollOffset,
 		maxScroll:     maxScroll,
-		contentHeight: float32(totalLines) * t.charHeight,
+		contentHeight: float32(totalLines) * t.cellHeight(),
 	}
 }
 
@@ -1248,24 +1258,30 @@ func (t *NativeTerminalWidget) updateUnifiedScrollBar(f frame, viewport VirtualS
 		return
 	}
 
+	// A refresh is scheduled here; the container's scroll OFFSET is not touched.
+	//
+	// What used to live here assigned t.scroll.Scroll.Offset -- on the EMBEDDED
+	// Scroll, bypassing every guard on HybridScrollContainer -- from a goroutine
+	// 5ms after each paint. The value came from contentHeight (totalLines *
+	// cellHeight), which exceeds the container as soon as there is any
+	// scrollback, so it fired on every paint of every session with history.
+	// Fyne then clamped it in refreshBars to the only room available: the
+	// sentinel row's leftover, between 1px and a full cell. That left the grid
+	// sitting a few pixels high, and once anything else zeroed the offset, a
+	// visible jump down and back on every click as this put it back.
+	//
+	// The Refresh, however, is load-bearing: it is what marks the canvas dirty
+	// after a frame. Removing the whole block froze the display -- input still
+	// reached the device, nothing appeared on screen -- which is indistinguishable
+	// from losing the keyboard. So the refresh stays and the offset does not.
 	go func() {
 		time.Sleep(5 * time.Millisecond)
 		fyne.Do(func() {
-			if viewport.maxScroll > 0 {
-				scrollPercentage := float32(viewport.scrollOffset) / float32(viewport.maxScroll)
-
-				// Update HybridScrollContainer position
-				containerSize := t.scroll.Scroll.Size()
-				if viewport.contentHeight > containerSize.Height {
-					maxScrollY := viewport.contentHeight - containerSize.Height
-					scrollY := maxScrollY * scrollPercentage
-					t.scroll.Scroll.Offset = fyne.NewPos(0, scrollY)
-					t.scroll.Scroll.Refresh()
-				}
-			} else {
-				t.scroll.Scroll.Offset = fyne.NewPos(0, 0)
-				t.scroll.Scroll.Refresh()
+			if t.scroll == nil {
+				return
 			}
+			t.scroll.pinOffset()
+			t.scroll.Scroll.Refresh()
 		})
 	}()
 }
@@ -1534,9 +1550,10 @@ func (t *NativeTerminalWidget) calculateCharDimensions() {
 }
 
 func (t *NativeTerminalWidget) initializeTextGridSize() {
+	cw, ch := t.gridCellSize()
 	initialSize := fyne.NewSize(
-		float32(t.cols)*t.charWidth,
-		float32(t.rows)*t.charHeight,
+		float32(t.cols)*cw,
+		float32(t.rows)*ch,
 	)
 	t.textGrid.Resize(initialSize)
 
@@ -1643,10 +1660,12 @@ func (t *NativeTerminalWidget) renderAlternateScreenUnified(f frame) {
 		}
 	}
 
-	// Size TextGrid to exact screen dimensions
+	// Size TextGrid to exact screen dimensions, in the grid's own cell units.
+	// Load-bearing for repaint -- see the normal path above.
+	altCW, altCH := t.gridCellSize()
 	screenSize := fyne.NewSize(
-		float32(t.cols)*t.charWidth,
-		float32(t.rows)*t.charHeight,
+		float32(t.cols)*altCW,
+		float32(t.rows)*altCH,
 	)
 
 	currentSize := t.textGrid.Size()
@@ -1817,7 +1836,7 @@ func (t *NativeTerminalWidget) Dragged(event *fyne.DragEvent) {
 		t.selectionEnd = event.Position
 
 		if t.selection != nil {
-			t.selection.HandleDrag(event.Position)
+			t.selection.HandleDrag(event.AbsolutePosition, event.Position)
 		}
 	}
 }
@@ -1867,7 +1886,7 @@ func (t *NativeTerminalWidget) findWordBoundaries(line string, col int) (start, 
 }
 
 // gridCellSize returns the ACTUAL on-screen size of one character cell, read
-// back from the TextGrid's measured MinSize. The visible glyphs are a
+// back from the TextGrid itself. The visible glyphs are a
 // widget.TextGrid, which renders at the app theme's text size (NOT the
 // terminal's fontSize), so this measured value - not the fontSize-derived
 // charWidth/charHeight - is the single source of truth for mapping pixels to
@@ -1877,16 +1896,26 @@ func (t *NativeTerminalWidget) findWordBoundaries(line string, col int) (start, 
 // exactly what a denser app theme introduced). Falls back to the fontSize ratio
 // before the grid has any rows.
 func (t *NativeTerminalWidget) gridCellSize() (cw, ch float32) {
-	// Compute the cell size the SAME way widget.TextGrid does internally:
-	// MeasureText("M", fontSize, Monospace), with width and height rounded. We do
-	// NOT read it back from textGrid.MinSize(), because when the terminal is
-	// inside a container.NewThemeOverride the grid RENDERS at the override's text
-	// size while MinSize can still resolve against the global app theme - the two
-	// diverge and selection/overlay land nowhere near the glyphs. Measuring from
-	// the terminal's own fontSize (which is exactly what the override renders at)
-	// always matches the rendered cell, and is deterministic even before the grid
-	// has been laid out. Falls back to the fontSize-ratio estimate if measurement
-	// returns nothing.
+	// FIRST CHOICE: read the cell back OUT of the grid rather than predicting it.
+	// PositionForCursorLocation(row, col) returns (col*cellSize.Width,
+	// row*cellSize.Height), so (1,1) IS the cell -- the exact divisor
+	// CursorLocationForPosition uses to turn a pixel into a row. A readback cannot
+	// disagree with the grid; a recomputation can, and when it does, nothing in
+	// the stack is able to report the disagreement because each side is
+	// internally consistent. Measured on macOS at fontSize 17: the grid's cell is
+	// 10.00x20.00 while the fontSize-ratio estimate says 9.35x19.55 - a 3.3% error
+	// that compounds into a full row within 20 lines.
+	if rcw, rch, ok := t.gridCellSizeReadback(); ok {
+		return rcw, rch
+	}
+
+	// FALLBACK, used only before Fyne has built the grid's renderer: compute the
+	// cell the SAME way widget.TextGrid does internally - MeasureText("M",
+	// fontSize, Monospace), width and height rounded. We do NOT read it from
+	// textGrid.MinSize(), because when the terminal is inside a
+	// container.NewThemeOverride the grid RENDERS at the override's text size
+	// while MinSize can still resolve against the global app theme - the two
+	// diverge and selection/overlay land nowhere near the glyphs.
 	if t.fontSize > 0 {
 		sz := fyne.MeasureText("M", t.fontSize, fyne.TextStyle{Monospace: true})
 		cw = float32(math.Round(float64(sz.Width)))
@@ -1896,6 +1925,39 @@ func (t *NativeTerminalWidget) gridCellSize() (cw, ch float32) {
 		}
 	}
 	return t.charWidth, t.charHeight
+}
+
+// cellHeight is gridCellSize's height, for the viewport calculators. They run on
+// both the paint and the event path, so they must not disagree with the hit test
+// about how tall a row is.
+func (t *NativeTerminalWidget) cellHeight() float32 {
+	_, ch := t.gridCellSize()
+	return ch
+}
+
+// gridCellSizeReadback asks the TextGrid for its own cell size.
+//
+// PositionForCursorLocation dereferences the grid's renderer-owned content,
+// which does not exist until Fyne has created the renderer -- and there is no
+// exported way to ask whether it has. So the read is guarded rather than
+// predicted: callers that run before first paint (construction, toolkit-free
+// tests) get ok=false and keep their arithmetic, and everyone after first paint
+// gets the authoritative value.
+func (t *NativeTerminalWidget) gridCellSizeReadback() (cw, ch float32, ok bool) {
+	if t.textGrid == nil {
+		return 0, 0, false
+	}
+	defer func() {
+		if recover() != nil {
+			cw, ch, ok = 0, 0, false
+		}
+	}()
+
+	p := t.textGrid.PositionForCursorLocation(1, 1)
+	if p.X <= 0 || p.Y <= 0 {
+		return 0, 0, false
+	}
+	return p.X, p.Y, true
 }
 
 // gridCellAt maps a position in the WIDGET's coordinate space to a grid cell,
@@ -1932,6 +1994,49 @@ func (t *NativeTerminalWidget) gridCellAt(pos fyne.Position) (row, col int, ok b
 	return row, col, true
 }
 
+// gridCellAtAbs maps a CANVAS-ABSOLUTE position to a grid cell.
+//
+// This is the mapping every entry point should use. gridCellAt subtracts one
+// driver lookup from another (grid-relative-to-terminal) and then applies that
+// to a position whose space depends on WHICH widget the driver happened to
+// deliver the event to -- mouse events land on the scroll container, taps land
+// on the terminal. Getting that pairing wrong displaces the hit test by the
+// whole window chrome, and nothing reports it.
+//
+// Absolute positions have no such ambiguity: every fyne.PointEvent carries one,
+// and the grid's own absolute position is the only other quantity needed. One
+// lookup, one subtraction, no assumption about the delivery path.
+//
+// Reports false if the result lands outside the grid by more than a cell, which
+// is what a failed lookup looks like (an unfound object resolves to 0,0), so the
+// caller can fall back rather than select in the wrong place.
+func (t *NativeTerminalWidget) gridCellAtAbs(abs fyne.Position) (row, col int, ok bool) {
+	if t.textGrid == nil {
+		return 0, 0, false
+	}
+	app := fyne.CurrentApp()
+	if app == nil {
+		return 0, 0, false
+	}
+	drv := app.Driver()
+	if drv == nil || drv.CanvasForObject(t) == nil {
+		return 0, 0, false
+	}
+
+	local := abs.Subtract(drv.AbsolutePositionForObject(t.textGrid))
+	cw, ch := t.gridCellSize()
+	size := t.textGrid.Size()
+	if local.X < -cw || local.Y < -ch ||
+		local.X > size.Width+cw || local.Y > size.Height+ch {
+		dprintf("gridCellAtAbs: %v maps outside the grid (local=%v size=%v); falling back\n",
+			abs, local, size)
+		return 0, 0, false
+	}
+
+	row, col = t.textGrid.CursorLocationForPosition(local)
+	return row, col, true
+}
+
 // gridOrigin is the TextGrid's top-left corner in this widget's coordinate
 // space, measured through the driver.
 func (t *NativeTerminalWidget) gridOrigin() (fyne.Position, bool) {
@@ -1960,7 +2065,7 @@ func (t *NativeTerminalWidget) gridOrigin() (fyne.Position, bool) {
 func (t *NativeTerminalWidget) DoubleTapped(event *fyne.PointEvent) {
 	dprintf("DoubleTapped at %.1f,%.1f\n", event.Position.X, event.Position.Y)
 
-	row, col, ok := t.gridCellAt(event.Position)
+	row, col, ok := t.gridCellAtAbs(event.AbsolutePosition)
 	if !ok {
 		cw, ch := t.gridCellSize()
 		col = 0
@@ -2010,10 +2115,17 @@ func (t *NativeTerminalWidget) DoubleTapped(event *fyne.PointEvent) {
 func (t *NativeTerminalWidget) TripleTapped(event *fyne.PointEvent) {
 	dprintf("TripleTapped at %.1f,%.1f - selecting entire line\n", event.Position.X, event.Position.Y)
 
-	_, ch := t.gridCellSize()
-	row := 0
-	if ch > 0 {
-		row = int(event.Position.Y / ch)
+	// Same hit test as MouseDown and DoubleTapped. This used to divide
+	// Position.Y by the cell height directly, ignoring the grid's origin
+	// entirely -- a third pixel->row mapping for the same question, which is
+	// two too many. The arithmetic remains only as the no-canvas fallback.
+	row, _, ok := t.gridCellAtAbs(event.AbsolutePosition)
+	if !ok {
+		_, ch := t.gridCellSize()
+		row = 0
+		if ch > 0 {
+			row = int(event.Position.Y / ch)
+		}
 	}
 
 	// Get display lines
