@@ -989,7 +989,13 @@ func (t *termApplet) Stop()                      {}
 func (h *host) launchCrawl() {
 	h.lastCrawl.Params.VaultPath = h.runVaultPath()
 	ui.ShowCrawlDialog(h.win, h.lastCrawl, func(l ui.CrawlLaunch) {
-		l.Params.VaultPath = h.runVaultPath()
+		// Only when the dialog did NOT ask for manual credentials. It
+		// clears VaultPath deliberately in that case, and restoring it
+		// here is exactly the bug the selector exists to close: the
+		// typed credential would be collected and then never offered.
+		if !l.ManualCreds {
+			l.Params.VaultPath = h.runVaultPath()
+		}
 		h.lastCrawl = l
 		h.startCrawl(l)
 	})
@@ -1093,7 +1099,13 @@ func (h *host) startCrawl(l ui.CrawlLaunch) {
 			// The OPEN vault, not a path. Build must never try to
 			// unlock one from here: it runs on this goroutine and
 			// has nowhere to ask for a master password.
-			Vault: h.vault,
+			//
+			// Nil for a manual run, and not merely unused: Build's
+			// no-credentials guard tests this field, so leaving an
+			// open vault here would let a manual run with every
+			// field blank past the guard and fail device by device
+			// instead of before the first dial.
+			Vault: h.runVault(l.ManualCreds),
 			Static: crawldial.StaticCreds{
 				Username: l.Auth.Username, Password: l.Auth.Password, KeyPath: l.Auth.KeyPath,
 			},
@@ -1508,7 +1520,9 @@ func (h *host) launchCapture() {
 		h.lastCapture.Params.SessionFile = h.sessionsPath
 	}
 	ui.ShowCaptureDialog(h.win, h.lastCapture, capturedial.KnownTypes(), func(l ui.CaptureLaunch) {
-		l.Params.VaultPath = h.runVaultPath()
+		if !l.ManualCreds {
+			l.Params.VaultPath = h.runVaultPath()
+		}
 		h.lastCapture = l
 		h.startCapture(l)
 	})
@@ -1592,7 +1606,7 @@ func (h *host) startCapture(l ui.CaptureLaunch) {
 		}()
 
 		built, err := capturedial.Build(l.Params, capturedial.Options{
-			Vault: h.vault,
+			Vault: h.runVault(l.ManualCreds),
 			Static: capturedial.StaticCreds{
 				Username: l.Auth.Username, Password: l.Auth.Password, KeyPath: l.Auth.KeyPath,
 			},
@@ -2128,6 +2142,19 @@ func (h *host) runVaultPath() string {
 		return ""
 	}
 	return h.vaultPath
+}
+
+// runVault is the vault a run should use, and it is nil when the run asked for
+// manual credentials.
+//
+// Paired with runVaultPath: a manual run has to look to Build exactly like a
+// run with no vault at all, or the static credentials it collected are never
+// reached.
+func (h *host) runVault(manual bool) *vault.Vault {
+	if manual {
+		return nil
+	}
+	return h.vault
 }
 
 func authTypeName(c vault.Credential) string {

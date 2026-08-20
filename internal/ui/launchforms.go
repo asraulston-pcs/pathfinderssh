@@ -55,6 +55,18 @@ type CrawlLaunch struct {
 	Params crawlrun.Params
 	Auth   LaunchAuth
 
+	// ManualCreds says the run must use Auth and not the vault, even when
+	// a vault is open.
+	//
+	// Without an explicit answer this was decided by whether the vault
+	// happened to be unlocked, and the typed credential was discarded
+	// with no sign it had been: the resolver offered its own credential
+	// instead, so a device that would have accepted what the user typed
+	// came back as an authentication failure. That reads as wrong gear
+	// or a wrong password, not as an ignored field, and it spends a real
+	// failed authentication finding out.
+	ManualCreds bool
+
 	// MapPath, SaveRun and LastRun are the file side of a run: where the
 	// topology goes, where this run is recorded for the next comparison,
 	// and which previous run to compare against.
@@ -70,7 +82,59 @@ type CaptureLaunch struct {
 	Params capturerun.Params
 	Auth   LaunchAuth
 
+	// ManualCreds says the run must use Auth and not the vault. See the
+	// note on CrawlLaunch.
+	ManualCreds bool
+
 	Verbose bool
+}
+
+// credSourceRow builds the Vault/Manual selector shared by both dialogs.
+//
+// The selector is the whole fix: which source a run uses is now something
+// someone answered rather than a side effect of whether the vault happened to
+// be unlocked when the dialog opened. It also gates the fields it applies to,
+// so a form that is going to ignore what you type says so before you type it
+// rather than after the run fails.
+//
+// vaultOpen false forces Manual and disables the choice: with no vault there
+// is nothing to choose between, and offering Vault would be offering a mode
+// that cannot dial.
+func credSourceRow(vaultOpen, preferManual bool, onChange func(manual bool)) *widget.Select {
+	sel := widget.NewSelect([]string{credSourceVault, credSourceManual}, func(s string) {
+		onChange(s == credSourceManual)
+	})
+	if !vaultOpen || preferManual {
+		sel.SetSelected(credSourceManual)
+	} else {
+		sel.SetSelected(credSourceVault)
+	}
+	if !vaultOpen {
+		sel.Disable()
+	}
+	return sel
+}
+
+const (
+	credSourceVault  = "Vault"
+	credSourceManual = "Manual (typed below)"
+)
+
+// applyCredSource enables the fields the chosen source actually reads and
+// disables the rest. Credential tags select WITHIN a vault and mean nothing
+// without one — Params.Validate says so and would reject the run.
+func applyCredSource(manual bool, credTags, user, pass, keyPath *widget.Entry) {
+	set := func(e *widget.Entry, on bool) {
+		if on {
+			e.Enable()
+			return
+		}
+		e.Disable()
+	}
+	set(credTags, !manual)
+	set(user, manual)
+	set(pass, manual)
+	set(keyPath, manual)
 }
 
 // ShowCrawlDialog collects crawl parameters and calls onRun with them.
@@ -151,11 +215,23 @@ func ShowCrawlDialog(w fyne.Window, prev CrawlLaunch, onRun func(CrawlLaunch)) {
 		"Host keys", hostKeys,
 		"", legacy,
 	)
-	// No vault field. The vault is unlocked once, by the host, and a dialog
-	// has nothing useful to say about it: a path typed here would be opened
-	// a second time by Build, on the run's own goroutine, with nowhere to
-	// ask for a master password.
+	// No vault PATH field. The vault is unlocked once, by the host, and a
+	// dialog has nothing useful to say about which file: a path typed here
+	// would be opened a second time by Build, on the run's own goroutine,
+	// with nowhere to ask for a master password.
+	//
+	// Which SOURCE to use is a different question, and it does belong
+	// here — see credSourceRow.
+	vaultOpen := p.VaultPath != ""
+	manual := !vaultOpen || prev.ManualCreds
+	credSource := credSourceRow(vaultOpen, prev.ManualCreds, func(m bool) {
+		manual = m
+		applyCredSource(m, credTags, user, pass, keyPath)
+	})
+	applyCredSource(manual, credTags, user, pass, keyPath)
+
 	authTab := formOf(
+		"Credentials from", credSource,
 		"Credential tags", credTags,
 		"Username", user,
 		"Password", pass,
@@ -184,12 +260,13 @@ func ShowCrawlDialog(w fyne.Window, prev CrawlLaunch, onRun func(CrawlLaunch)) {
 				return
 			}
 			out := CrawlLaunch{
-				Params:  crawlrun.Defaults(),
-				Auth:    LaunchAuth{Username: user.Text, Password: pass.Text, KeyPath: ExpandHome(keyPath.Text)},
-				MapPath: ExpandHome(mapPath.Text),
-				SaveRun: ExpandHome(saveRun.Text),
-				LastRun: ExpandHome(lastRun.Text),
-				Verbose: verbose.Checked,
+				Params:      crawlrun.Defaults(),
+				Auth:        LaunchAuth{Username: user.Text, Password: pass.Text, KeyPath: ExpandHome(keyPath.Text)},
+				ManualCreds: manual,
+				MapPath:     ExpandHome(mapPath.Text),
+				SaveRun:     ExpandHome(saveRun.Text),
+				LastRun:     ExpandHome(lastRun.Text),
+				Verbose:     verbose.Checked,
 			}
 			out.Params.Seeds = crawlrun.ParseSeeds(seeds.Text)
 			out.Params.Depth = atoiOr(depth.Text, out.Params.Depth)
@@ -199,8 +276,13 @@ func ShowCrawlDialog(w fyne.Window, prev CrawlLaunch, onRun func(CrawlLaunch)) {
 			out.Params.AllowDomains = crawlrun.ParseSeeds(allowDom.Text)
 			out.Params.Exclude = crawlrun.ParseSeeds(exclude.Text)
 			// Carried from prev, not from a field: the host owns it.
-			out.Params.VaultPath = p.VaultPath
-			out.Params.CredTags = crawlrun.ParseSeeds(credTags.Text)
+			// Empty in manual mode, which is what routes Build to the
+			// static dialer — an open vault would otherwise win and the
+			// typed credential would never be offered.
+			if !manual {
+				out.Params.VaultPath = p.VaultPath
+				out.Params.CredTags = crawlrun.ParseSeeds(credTags.Text)
+			}
 			out.Params.KnownHostsPath = ExpandHome(knownHosts.Text)
 			out.Params.Legacy = legacy.Checked
 			out.Params.TrustUnidirectional = trustUni.Checked
@@ -373,8 +455,17 @@ func ShowCaptureDialog(w fyne.Window, prev CaptureLaunch, knownTypes []string, o
 		"Command timeout", timeout,
 		"", verbose,
 	)
-	// No vault field — see the crawl dialog above.
+	// No vault path field, but a source selector — see the crawl dialog.
+	vaultOpen := p.VaultPath != ""
+	manual := !vaultOpen || prev.ManualCreds
+	credSource := credSourceRow(vaultOpen, prev.ManualCreds, func(m bool) {
+		manual = m
+		applyCredSource(m, credTags, user, pass, keyPath)
+	})
+	applyCredSource(manual, credTags, user, pass, keyPath)
+
 	authTab := formOf(
+		"Credentials from", credSource,
 		"Credential tags", credTags,
 		"Username", user,
 		"Password", pass,
@@ -396,9 +487,10 @@ func ShowCaptureDialog(w fyne.Window, prev CaptureLaunch, knownTypes []string, o
 				return
 			}
 			out := CaptureLaunch{
-				Params:  capturerun.Defaults(),
-				Auth:    LaunchAuth{Username: user.Text, Password: pass.Text, KeyPath: ExpandHome(keyPath.Text)},
-				Verbose: verbose.Checked,
+				Params:      capturerun.Defaults(),
+				Auth:        LaunchAuth{Username: user.Text, Password: pass.Text, KeyPath: ExpandHome(keyPath.Text)},
+				ManualCreds: manual,
+				Verbose:     verbose.Checked,
 			}
 			out.Params.Devices = capturerun.ParseDevices(devices.Text)
 			out.Params.DeviceFile = ExpandHome(deviceFile.Text)
@@ -413,8 +505,11 @@ func ShowCaptureDialog(w fyne.Window, prev CaptureLaunch, knownTypes []string, o
 			out.Params.Concurrency = atoiOr(conc.Text, out.Params.Concurrency)
 			out.Params.ExpensiveConcurrency = atoiOr(expConc.Text, out.Params.ExpensiveConcurrency)
 			out.Params.Timeout = durationOr(timeout.Text, out.Params.Timeout)
-			out.Params.VaultPath = p.VaultPath
-			out.Params.CredTags = capturerun.ParseDevices(credTags.Text)
+			// Empty in manual mode; see the crawl dialog above.
+			if !manual {
+				out.Params.VaultPath = p.VaultPath
+				out.Params.CredTags = capturerun.ParseDevices(credTags.Text)
+			}
 			out.Params.KnownHostsPath = ExpandHome(knownHosts.Text)
 			out.Params.Legacy = legacy.Checked
 			if hostKeys.SelectedIndex() == 1 {
