@@ -160,9 +160,12 @@ type JumpSpec struct {
 	Credential string `yaml:"credential,omitempty"`
 	KeyPath    string `yaml:"key_path,omitempty"`
 
-	// Secrets, never marshalled. See the package comment.
-	Password      string `yaml:"-"`
-	KeyPassphrase string `yaml:"-"`
+	// Secrets, never marshalled. See the package comment. The json tag is
+	// not decoration: internal/ui persists a quick-connect node to
+	// launches.json, and an untagged field would be written under its Go
+	// name.
+	Password      string `yaml:"-" json:"-"`
+	KeyPassphrase string `yaml:"-" json:"-"`
 }
 
 // InUse reports whether a bastion was configured. An empty host means direct.
@@ -205,9 +208,10 @@ type Node struct {
 	AuthType string `yaml:"auth_type,omitempty"`
 	KeyPath  string `yaml:"key_path,omitempty"`
 
-	// Secrets, never marshalled. See the package comment.
-	Password      string `yaml:"-"`
-	KeyPassphrase string `yaml:"-"`
+	// Secrets, never marshalled. See the package comment, and the note on
+	// JumpSpec's pair about the json tag.
+	Password      string `yaml:"-" json:"-"`
+	KeyPassphrase string `yaml:"-" json:"-"`
 
 	Jump JumpSpec `yaml:"jump,omitempty"`
 

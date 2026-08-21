@@ -156,6 +156,8 @@
       <div class="section">
         <h2>View</h2>
         <select id="layoutSelect">
+          <option value="dagre">Hierarchical &#8595; Top&#8594;Bottom</option>
+          <option value="dagre-lr">Hierarchical &#8594; Left&#8594;Right</option>
           <option value="breadthfirst">Breadth-first</option>
           <option value="cose">Force-directed</option>
           <option value="concentric">Concentric</option>
@@ -209,6 +211,14 @@
 </div>
 
 <script src="/assets/vendor/cytoscape.min.js"></script>
+<!-- Order matters: dagre before cytoscape-dagre. The extension captures the
+     dagre global at definition time, and getting it backwards does not fail
+     loudly -- cytoscapeDagre is still defined, viewer.js's dagreAvailable
+     check still passes, the layout still registers, and it throws on
+     graphlib the first time it is actually run. So the breadthfirst
+     fallback never fires and the map is broken rather than plain. -->
+<script src="/assets/vendor/dagre.min.js"></script>
+<script src="/assets/vendor/cytoscape-dagre.js"></script>
 <script src="/assets/viewer.js"></script>
 <script src="/assets/drawio.js"></script>
 <script src="/assets/app.js"></script>

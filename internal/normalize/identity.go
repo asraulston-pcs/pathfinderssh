@@ -113,6 +113,70 @@ func ResolveWith(r Resolver, host string) NameResult {
 	return res
 }
 
+// IsCGNAT reports whether v parses as an address inside 100.64.0.0/10.
+//
+// Exported because callers outside this package have to make the same
+// judgement about addresses they did NOT get from a reverse lookup. Resolve
+// answers "what is this address really called" and starts from an address in
+// hand; this answers the narrower question that comes up when an address
+// arrives from a FORWARD lookup — a name's A record can land in shared space
+// just as easily, and it has earned the same suspicion. The crawler's
+// neighbor-address fill is the caller that needs it.
+func IsCGNAT(v string) bool {
+	addr, err := netip.ParseAddr(strings.TrimSpace(v))
+	return err == nil && cgnatPrefix.Contains(addr)
+}
+
+// SameDevice reports whether two identifiers name the same device.
+//
+// The rule is label-prefix containment: one name's labels have to be a prefix
+// of the other's. "qfx.site1" and "qfx.site1.example.net" are one device
+// because the first is a prefix of the second, and a bare "qfx" matches both
+// because it is a prefix of each. "qfx.site1" and "qfx.site2" are NOT, and
+// that is the whole reason this exists.
+//
+// It replaces comparing first labels, which is what the crawl claim set used
+// to do. First-label comparison reads the same until an estate names devices
+// by role and site — qfx.site1, qfx.site2, agg351.site1, agg351.site2 — and
+// then every pair collapses onto one claim and the second device of each pair
+// is silently never crawled. StripSuffixes has always promised that site
+// labels below a stripped suffix keep devices distinct; this is what makes
+// that true at the point it matters.
+//
+// A bare label still matches every qualified name under it, which is real
+// ambiguity rather than a bug: "qfx" on its own does not say which site, and
+// treating it as a third device would be worse than treating it as one of the
+// two. Addresses are compared whole — the dots in 172.16.128.2 are not label
+// separators, and label logic on them collides every 172.x device in the
+// estate.
+func SameDevice(a, b string) bool {
+	a, b = Identifier(a), Identifier(b)
+	if a == "" || b == "" {
+		return false
+	}
+	if a == b {
+		return true
+	}
+	if isAddr(a) || isAddr(b) {
+		return false
+	}
+	la, lb := strings.Split(a, "."), strings.Split(b, ".")
+	if len(la) > len(lb) {
+		la, lb = lb, la
+	}
+	for i, l := range la {
+		if l != lb[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func isAddr(s string) bool {
+	_, err := netip.ParseAddr(s)
+	return err == nil
+}
+
 // Canonical is the identity of a device: the CGNAT rule applied, then any
 // configured domain suffix stripped, so a box seen short and fully qualified
 // is one device. Use this for cache keys; use Resolve().Name for the string to

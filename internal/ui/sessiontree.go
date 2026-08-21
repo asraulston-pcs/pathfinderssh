@@ -478,9 +478,10 @@ type sessionRow struct {
 // them are called by name anywhere in this package, so a signature that drifted
 // would otherwise show up as a row that quietly stopped responding.
 var (
-	_ fyne.Tappable       = (*sessionRow)(nil)
-	_ fyne.DoubleTappable = (*sessionRow)(nil)
-	_ desktop.Mouseable   = (*sessionRow)(nil)
+	_ fyne.Tappable          = (*sessionRow)(nil)
+	_ fyne.DoubleTappable    = (*sessionRow)(nil)
+	_ fyne.SecondaryTappable = (*sessionRow)(nil)
+	_ desktop.Mouseable      = (*sessionRow)(nil)
 )
 
 func newSessionRow(t *SessionTree) *sessionRow {
@@ -567,5 +568,15 @@ func (r *sessionRow) Tapped(*fyne.PointEvent) {
 func (r *sessionRow) DoubleTapped(*fyne.PointEvent) {
 	if r.tree != nil && r.uid != "" {
 		r.tree.rowActivated(r.uid)
+	}
+}
+
+// TappedSecondary opens the row's context menu. The absolute position is used
+// rather than the local one because the popup is placed on the canvas, not
+// inside this row — placing it at the local position would put every menu in
+// the top-left corner of the window.
+func (r *sessionRow) TappedSecondary(e *fyne.PointEvent) {
+	if r.tree != nil && r.uid != "" {
+		r.tree.showRowMenu(r.uid, e.AbsolutePosition)
 	}
 }
