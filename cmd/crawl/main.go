@@ -86,7 +86,7 @@ func expandCSV(in []string) []string {
 func main() {
 	var seeds, exclude, allowDomains, domains, credTags stringList
 	flag.Var(&seeds, "seed", "seed device (repeatable or comma-separated)")
-	flag.Var(&exclude, "exclude", "exclusion substring(s), comma-separable, matched vs platform/hostname/sysname")
+	flag.Var(&exclude, "exclude", "exclusion substring(s), comma-separable, matched vs platform/hostname/sysname and, for neighbors, the remote port description")
 	flag.Var(&allowDomains, "allow-domain", "only dial neighbors under these domain suffixes (repeatable); others map as leaves")
 	flag.Var(&domains, "domain", "domain suffix (repeatable): stripped from node names in the map and appended when resolving bare neighbor names")
 	user := flag.String("user", os.Getenv("USER"), "ssh username")

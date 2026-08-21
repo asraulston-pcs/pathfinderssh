@@ -45,15 +45,22 @@ import (
 // carry. It is a plain struct here rather than the dialer's own type so this
 // file does not import a dialer.
 type LaunchAuth struct {
-	Username string
-	Password string
-	KeyPath  string
+	Username string `json:"username,omitempty"`
+
+	// Password has no JSON name at all, so a persisted launch cannot carry
+	// one even if a caller forgets to redact. LaunchState.Redact clears it
+	// as well -- this is the belt to that pair of braces, and it also keeps
+	// an empty "password" key out of a file people are meant to read, which
+	// would otherwise read as an invitation to fill it in.
+	Password string `json:"-"`
+
+	KeyPath string `json:"key_path,omitempty"`
 }
 
 // CrawlLaunch is everything the crawl dialog collects.
 type CrawlLaunch struct {
-	Params crawlrun.Params
-	Auth   LaunchAuth
+	Params crawlrun.Params `json:"params"`
+	Auth   LaunchAuth      `json:"auth,omitempty"`
 
 	// ManualCreds says the run must use Auth and not the vault, even when
 	// a vault is open.
@@ -65,28 +72,28 @@ type CrawlLaunch struct {
 	// came back as an authentication failure. That reads as wrong gear
 	// or a wrong password, not as an ignored field, and it spends a real
 	// failed authentication finding out.
-	ManualCreds bool
+	ManualCreds bool `json:"manual_creds,omitempty"`
 
 	// MapPath, SaveRun and LastRun are the file side of a run: where the
 	// topology goes, where this run is recorded for the next comparison,
 	// and which previous run to compare against.
-	MapPath string
-	SaveRun string
-	LastRun string
+	MapPath string `json:"map_path,omitempty"`
+	SaveRun string `json:"save_run,omitempty"`
+	LastRun string `json:"last_run,omitempty"`
 
-	Verbose bool
+	Verbose bool `json:"verbose,omitempty"`
 }
 
 // CaptureLaunch is everything the capture dialog collects.
 type CaptureLaunch struct {
-	Params capturerun.Params
-	Auth   LaunchAuth
+	Params capturerun.Params `json:"params"`
+	Auth   LaunchAuth        `json:"auth,omitempty"`
 
 	// ManualCreds says the run must use Auth and not the vault. See the
 	// note on CrawlLaunch.
-	ManualCreds bool
+	ManualCreds bool `json:"manual_creds,omitempty"`
 
-	Verbose bool
+	Verbose bool `json:"verbose,omitempty"`
 }
 
 // credSourceRow builds the Vault/Manual selector shared by both dialogs.

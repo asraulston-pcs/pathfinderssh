@@ -25,15 +25,15 @@ import (
 
 // SearchLaunch is what the dialog collects.
 type SearchLaunch struct {
-	Query     string
-	StorePath string
+	Query     string `json:"query,omitempty"`
+	StorePath string `json:"store_path,omitempty"`
 
 	// Types empty means every capture type the store holds.
-	Types         []string
-	CaseSensitive bool
+	Types         []string `json:"types,omitempty"`
+	CaseSensitive bool     `json:"case_sensitive,omitempty"`
 
 	// Limit caps hits held in memory. Zero takes the engine default.
-	Limit int
+	Limit int `json:"limit,omitempty"`
 }
 
 // ShowSearchDialog collects a search.

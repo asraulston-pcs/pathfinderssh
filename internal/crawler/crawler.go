@@ -60,8 +60,24 @@ type Config struct {
 	// one because the first did not resolve is throwing away information
 	// the device handed us.
 	DisableIPFallback bool
-	SessionOpts       netexec.Options
-	Log               Logf
+
+	// DisableNeighborDNS turns off completing a neighbor's management
+	// address by forward-resolving the name it was reported under. The zero
+	// value keeps it ON, matching DisableIPFallback above: a collection step
+	// with no address column is the reason the field is empty, not a
+	// statement by the device that it has no address. See neighboraddr.go.
+	DisableNeighborDNS bool
+
+	// DisablePerInterfaceDetail turns off re-asking for LLDP detail one
+	// interface at a time when the bulk command is rejected. Zero value
+	// keeps it ON. It costs a round trip per adjacency on the devices that
+	// need it, and buys the system description — which is the field
+	// ExcludePatterns matches, so turning it off means exclusion on those
+	// devices degrades to hostname and port text. See perinterface.go.
+	DisablePerInterfaceDetail bool
+
+	SessionOpts netexec.Options
+	Log         Logf
 
 	// Emit receives the same events as structured values, for anything that
 	// needs to accumulate state rather than watch output scroll past. It is
@@ -76,6 +92,29 @@ type Crawler struct {
 	mu       sync.Mutex
 	claimed  map[string]struct{}
 	devices  []*topo.Device
+
+	// claimIdx indexes claimed identities by first label, so a claim check
+	// compares against the handful that could match instead of all of them.
+	// Guarded by mu.
+	claimIdx map[string][]string
+
+	// excluded records targets an exclude pattern has matched, keyed on the
+	// claim identity, with the pattern that did it. Guarded by mu.
+	//
+	// Exclusion is a decision about a DEVICE, but the evidence arrives per
+	// EDGE, and the edges disagree. A host with two links to a leaf appears
+	// twice; if detail came back for one port and not the other, one claim
+	// carries the system description that matches "linux" and the other
+	// carries nothing. Deciding per edge means the bare one admits the host
+	// and it gets dialed anyway — with the two rows keyed differently, so
+	// the run table shows it excluded AND running and looks self-
+	// contradictory. Once anything says a target is excluded, it stays
+	// excluded for the rest of the run.
+	excluded map[string]string
+
+	// addrCache memoizes neighbor-name lookups for the life of one crawl.
+	// Guarded by mu. See neighboraddr.go.
+	addrCache map[string]resolvedAddr
 }
 
 // dialAllowed applies the AllowDomains policy to a candidate target.
@@ -133,9 +172,12 @@ func New(cfg Config) *Crawler {
 		cfg.Log = func(string, ...any) {}
 	}
 	return &Crawler{
-		cfg:      cfg,
-		resolver: normalize.DefaultResolver,
-		claimed:  map[string]struct{}{},
+		cfg:       cfg,
+		resolver:  normalize.DefaultResolver,
+		claimed:   map[string]struct{}{},
+		claimIdx:  map[string][]string{},
+		excluded:  map[string]string{},
+		addrCache: map[string]resolvedAddr{},
 	}
 }
 
@@ -147,34 +189,124 @@ func (c *Crawler) identity(target string) string {
 	return normalize.StripSuffixes(target, c.cfg.Domains)
 }
 
-// tryClaim registers a target (and its short form) exactly once.
+// tryClaim registers a target exactly once, and reports whether this call is
+// the one that got it.
+//
+// A claim covers every identity that names the same device — see
+// normalize.SameDevice. It used to cover the target's first label as a claim
+// in its own right, which is the same thing right up until an estate names
+// devices by role and site: claiming "qfx.site1" also claimed "qfx", so
+// "qfx.site2" arrived looking like a device already crawled and was dropped
+// without a word. Every <role>.<site1>/<role>.<site2> pair in the estate lost
+// its second half that way, and the loss is invisible — a refused claim
+// produces no failure, no log line, and no node.
 func (c *Crawler) tryClaim(target string) bool {
 	id := c.identity(target)
-	short := normalize.ShortName(target)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if _, ok := c.claimed[id]; ok {
+	if c.claimedLocked(id) {
 		return false
 	}
-	if _, ok := c.claimed[short]; ok {
-		return false
+	c.recordLocked(id)
+	return true
+}
+
+// claimedLocked reports whether anything already claimed names this device.
+// Callers hold c.mu.
+func (c *Crawler) claimedLocked(id string) bool {
+	if _, ok := c.claimed[id]; ok {
+		return true
+	}
+	// Only identities sharing a first label can possibly match, which keeps
+	// this from scanning the whole claim set on every neighbor of every
+	// device.
+	for _, cand := range c.claimIdx[normalize.ShortName(id)] {
+		if normalize.SameDevice(cand, id) {
+			return true
+		}
+	}
+	return false
+}
+
+// recordLocked files an identity in both the exact set and the first-label
+// index. Callers hold c.mu.
+func (c *Crawler) recordLocked(id string) {
+	if id == "" {
+		return
+	}
+	if _, ok := c.claimed[id]; ok {
+		return
 	}
 	c.claimed[id] = struct{}{}
-	c.claimed[short] = struct{}{}
-	return true
+	if c.claimIdx == nil {
+		c.claimIdx = map[string][]string{}
+	}
+	k := normalize.ShortName(id)
+	c.claimIdx[k] = append(c.claimIdx[k], id)
 }
 
 // registerAliases claims a discovered device's other identities so the same
 // box reached by a different name later is not re-crawled.
+//
+// Only the most qualified form of each identity is filed. A device dialled as
+// "qfx.site1" that calls itself "qfx" from its prompt hands us both, and
+// filing the bare one would block "qfx.site2" — SameDevice matches a bare
+// label against every qualified name under it, which is correct as a question
+// about two names and wrong as a claim over an estate. Dropping it costs
+// nothing: anything the bare form would have matched, the qualified form
+// matches too.
 func (c *Crawler) registerAliases(d *topo.Device) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	ids := make([]string, 0, 3)
 	for _, id := range []string{d.Hostname, d.SysName, d.IPAddress} {
 		if id != "" {
-			c.claimed[normalize.StripSuffixes(id, c.cfg.Domains)] = struct{}{}
-			c.claimed[normalize.ShortName(id)] = struct{}{}
+			ids = append(ids, normalize.StripSuffixes(id, c.cfg.Domains))
 		}
 	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, id := range mostQualified(ids) {
+		// A bare placeholder claimed earlier — a seed written as "qfx", say —
+		// is superseded now that the device has told us its real name.
+		// Leaving it in place would keep every sibling site locked out for
+		// the rest of the run.
+		c.supersedeLocked(id)
+		c.recordLocked(id)
+	}
+}
+
+// mostQualified drops any identity that is a strict label-prefix of another
+// in the same set, keeping the longest form of each distinct name.
+func mostQualified(ids []string) []string {
+	out := make([]string, 0, len(ids))
+	for i, a := range ids {
+		covered := false
+		for j, b := range ids {
+			if i != j && len(b) > len(a) && normalize.SameDevice(a, b) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// supersedeLocked removes claims that are strictly less specific than id and
+// name the same device. Callers hold c.mu.
+func (c *Crawler) supersedeLocked(id string) {
+	k := normalize.ShortName(id)
+	kept := c.claimIdx[k][:0]
+	for _, cand := range c.claimIdx[k] {
+		if len(cand) < len(id) && normalize.SameDevice(cand, id) {
+			delete(c.claimed, cand)
+			continue
+		}
+		kept = append(kept, cand)
+	}
+	c.claimIdx[k] = kept
 }
 
 // resolveName applies the CGNAT rule and logs what it decided. The rule
@@ -313,6 +445,11 @@ func mergeNeighbor(dst *topo.Neighbor, src topo.Neighbor) {
 
 // crawlOne runs the full per-device pipeline against an already-admitted
 // device: resolution and claiming happened in admit, so this only dials.
+//
+// Collection is two phases and the order is load-bearing. Every step in the
+// plan runs first, each one enriching edges an earlier step already claimed;
+// only then are the remaining gaps filled from DNS. Anything the device said
+// about its own neighbors outranks anything a resolver says about them.
 func (c *Crawler) crawlOne(ctx context.Context, it item) *topo.Device {
 	target := it.target
 	d := &topo.Device{Hostname: target, Depth: it.depth}
@@ -406,7 +543,17 @@ func (c *Crawler) crawlOne(ctx context.Context, it item) *topo.Device {
 	// describing the same link can ENRICH the record rather than being
 	// dropped. See mergeNeighbor.
 	seen := map[[3]string]int{}
+
+	// The per-interface retry command, remembered from whichever step
+	// declares one. It runs after the whole plan and only against edges that
+	// still have no system description — see interfacesMissingDetail. Not
+	// armed by the bulk step failing: a partial answer leaves some edges
+	// bare and those are the ones worth asking about.
+	var fallbackCmd, fallbackKey string
 	for _, st := range plan {
+		if st.PerInterfaceFallback != "" {
+			fallbackCmd, fallbackKey = st.PerInterfaceFallback, st.Key
+		}
 		out, err := sess.Run(ctx, st.Command)
 		if err != nil {
 			if st.BestEffort {
@@ -418,12 +565,50 @@ func (c *Crawler) crawlOne(ctx context.Context, it item) *topo.Device {
 			d.Failed, d.FailedWhy = true, fmt.Sprintf("%q: %v", st.Command, err)
 			return d
 		}
+		// Repair CLI hard-wrapping before the template sees it. A row cut at
+		// the screen width leaves a bare fragment on the next line that no
+		// template matches: against a strict Error rule that is a whole-device
+		// parse failure, and against a loose one it is a truncated neighbor
+		// name that then fails to resolve. Done here rather than inside
+		// parseStep so the join count can be logged against the device and
+		// the command it came from. See unwrap.go.
+		if unwrapped, joins := unwrapWrapped(out); joins > 0 {
+			out = unwrapped
+			c.cfg.Log("crawl: %s: %q was hard-wrapped by the CLI; rejoined %d line(s)",
+				target, st.Command, joins)
+		}
+		// Then drop whatever still cannot be a row, for steps that opted in.
+		// One unrecognized line failing the parse for a whole device is a
+		// disproportionate outcome when the table has ninety good rows in it.
+		// Reported, never silent: a scrub nobody hears about is how a device
+		// ends up with a neighbor list that is missing links.
+		if st.ScrubToRows {
+			scrubbed, dropped, suspect := scrubToRows(out)
+			if len(dropped) > 0 {
+				out = scrubbed
+				detail := fmt.Sprintf("%s: dropped %d unparsable line(s), first: %s",
+					st.Command, len(dropped), truncate(dropped[0], 60))
+				if suspect > 0 {
+					detail += fmt.Sprintf(" (%d followed an over-long line and may be "+
+						"wrapped continuations; a neighbor name may be truncated)", suspect)
+				}
+				c.cfg.Emit.Send(crawlrun.Event{Kind: crawlrun.KindCollectErr,
+					Identity: it.identity, Detail: detail})
+				c.cfg.Log("crawl: %s: %s", target, detail)
+			}
+		}
 		recs, err := parseStep(fp.Name, st, out)
 		if err != nil {
 			if st.BestEffort {
 				c.cfg.Log("crawl: %s: parse %q (best-effort): %v", target, st.Command, err)
 				continue
 			}
+			// A required step that ran and would not parse is not a quiet
+			// outcome. Without the emit the device reports zero neighbors
+			// and the run looks clean — which is exactly how a wrapped
+			// Junos table hid for as long as it did.
+			c.cfg.Emit.Send(crawlrun.Event{Kind: crawlrun.KindCollectErr,
+				Identity: it.identity, Detail: st.Command + ": " + err.Error()})
 			c.cfg.Log("crawl: %s: parse %q: %v", target, st.Command, err)
 			continue
 		}
@@ -462,6 +647,16 @@ func (c *Crawler) crawlOne(ctx context.Context, it item) *topo.Device {
 		c.cfg.Log("crawl: %s: %q -> %d parsed, %d new, %d enriched, %d skipped",
 			target, st.Command, len(recs), added, enriched, skipped)
 	}
+
+	// Detail per interface, for the builds that only take it that way.
+	if fallbackCmd != "" {
+		c.collectPerInterface(ctx, sess, d, it.identity, fallbackCmd, fallbackKey)
+	}
+
+	// After the whole plan, never during it: a step that carries a real
+	// management address has to beat DNS, and it can only do that once every
+	// step has had its turn to merge. See neighboraddr.go.
+	c.fillNeighborAddrs(it.identity, d)
 	return d
 }
 
@@ -582,6 +777,14 @@ func (c *Crawler) CrawlContext(ctx context.Context, seeds []string) []*topo.Devi
 		// set of credential attempts on an account that already worked.
 		c.claimAll(results)
 
+		// Third pass, before any admission: settle exclusion for every
+		// target this batch mentions. An exclude verdict is about a device
+		// and the evidence arrives per edge, so a target has to be judged
+		// against everything the batch knows about it before anything is
+		// allowed to dial it. Judging inside the admission loop lets a bare
+		// edge admit a host that a later edge would have excluded.
+		c.markExcluded(results)
+
 		var next []item
 		for i, d := range results {
 			// Events key on the claim identity, never on Hostname. Hostname
@@ -618,15 +821,13 @@ func (c *Crawler) CrawlContext(ctx context.Context, seeds []string) []*topo.Devi
 				if !ok {
 					continue
 				}
-				// Pre-dial exclusion: the LLDP/CDP claim already carries
-				// the remote description/platform — skip dialing anything
-				// matching the exclude patterns. It stays in the map as a
-				// leaf; we just never connect to it.
-				if excl, pat := normalize.ShouldExclude(
-					[]string{n.RemoteDescr, n.RemotePlatform, n.RemoteDevice},
-					c.cfg.ExcludePatterns); excl {
+				// Pre-dial exclusion. The verdict was settled in
+				// markExcluded above, against every claim in the batch
+				// rather than just this one — see the note there and on
+				// Crawler.excluded.
+				if pat, excl := c.exclusionFor(t); excl {
 					c.cfg.Emit.Send(crawlrun.Event{Kind: crawlrun.KindNotDialed,
-						Identity: t, Via: identity, Depth: depth + 1,
+						Identity: c.identity(t), Via: identity, Depth: depth + 1,
 						Detail: "matches exclude " + pat})
 					c.cfg.Log("crawl: %s matches exclude %q (from neighbor claim); mapped as leaf, not dialed", t, pat)
 					continue

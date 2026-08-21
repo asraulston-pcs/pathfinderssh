@@ -32,6 +32,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -99,6 +100,13 @@ func main() {
 	settingsPath := ui.SettingsPath()
 	base, settingsErr := ui.LoadSettings(settingsPath)
 
+	// The last values each launch dialog was run with, from the previous
+	// session. Same failure stance as the settings: unreadable is not fatal,
+	// it just means the dialogs open on their defaults. Kept in a separate
+	// file so a corrupt seed list cannot take the theme down with it.
+	launchesPath := ui.LaunchesPath()
+	launches, launchesErr := ui.LoadLaunches(launchesPath)
+
 	// The flag wins over the file, but only when it was actually typed.
 	// Its default is "dark", so an unconditional assignment would mean a
 	// saved light theme lost every launch to a flag nobody passed.
@@ -129,6 +137,7 @@ func main() {
 		win:          w,
 		base:         base,
 		settingsPath: settingsPath,
+		launchesPath: launchesPath,
 		vaultPath:    ui.ExpandHome(*vaultPath),
 		verbose:      *verbose,
 	}
@@ -138,16 +147,45 @@ func main() {
 	h.shell = ui.NewShell(a, w)
 
 	// Seed the dialogs so the first launch is not an empty form.
+	//
+	// Three layers, in this order: the engine defaults, then whatever the
+	// previous session was run with, then any flag that was ACTUALLY typed.
+	// The last of those is the same rule the app theme follows a few lines
+	// up -- a flag with a default is not an instruction, and treating it as
+	// one would mean a stored store path lost every launch to a -store
+	// nobody passed.
 	h.lastCrawl.Params = crawlrun.Defaults()
 	h.lastCrawl.Verbose = *verbose
 	h.lastCapture.Params = capturerun.Defaults()
 	h.lastCapture.Params.StorePath = ui.ExpandHome(*storePath)
 	h.lastCapture.Verbose = *verbose
+	h.node = sessions.Defaults()
+
+	if len(launches.Crawl.Params.Seeds) > 0 || launches.Crawl.Params.Depth > 0 {
+		h.lastCrawl = launches.Crawl
+		h.lastCrawl.Verbose = *verbose
+	}
+	if launches.Capture.Params.StorePath != "" || len(launches.Capture.Params.Match) > 0 {
+		h.lastCapture = launches.Capture
+		h.lastCapture.Verbose = *verbose
+	}
+	h.lastSearch = launches.Search
+	h.lastMerge = launches.Merge
+	// Redacted on the way in as well: LoadLaunches already strips secrets,
+	// and this says so at the point where the node is adopted rather than
+	// leaving it as something a reader has to go and check.
+	if launches.QuickConnect.Label() != "" {
+		h.node = ui.RedactNode(launches.QuickConnect)
+	}
+
+	// A typed flag wins over the file for both of the values that have one.
+	if flagWasSet("store") {
+		h.lastCapture.Params.StorePath = ui.ExpandHome(*storePath)
+	}
 	if d := strings.TrimSpace(*domain); d != "" {
 		h.lastCrawl.Params.Domains = []string{d}
 		h.lastCapture.Params.Domains = []string{d}
 	}
-	h.node = sessions.Defaults()
 
 	h.shell.AddLauncher("Quick Connect", theme.ComputerIcon(), func() { h.launchTerminal(h.node) })
 	h.shell.AddLauncher("Crawl", theme.SearchIcon(), h.launchCrawl)
@@ -211,6 +249,14 @@ func main() {
 		log.Printf("[settings] %v", settingsErr)
 		dialog.ShowError(settingsErr, w)
 	}
+	// The launch file gets the log and not the dialog. The consequence of
+	// losing it is that the crawl dialog opens on its defaults, which is
+	// what a first run looks like anyway -- not worth a modal in front of
+	// somebody who is trying to start work, and stacking it behind the
+	// settings error would make two.
+	if launchesErr != nil {
+		log.Printf("[launches] %v", launchesErr)
+	}
 
 	// The first-run vault warning goes here for the same reason: there has
 	// to be a window for it to appear in. It is silent on every machine
@@ -254,6 +300,10 @@ type host struct {
 	// for where its settings live.
 	settingsPath string
 
+	// launchesPath is where the last values of every launch dialog are
+	// kept between runs. Separate from settingsPath: see launchstore.go.
+	launchesPath string
+
 	// tree is the saved inventory, docked down the left. The host owns the
 	// FILE; the widget owns the display and hands back a tree to save.
 	tree         *ui.SessionTree
@@ -263,6 +313,7 @@ type host struct {
 	lastCrawl   ui.CrawlLaunch
 	lastCapture ui.CaptureLaunch
 	lastSearch  ui.SearchLaunch
+	lastMerge   ui.MapMergeLaunch
 
 	// maps is the loopback viewer, started on the first map opened and
 	// kept for the life of the app: one port, one token, and a browser tab
@@ -337,7 +388,13 @@ func (h *host) launchTerminalTitled(title string, start sessions.Node) {
 		ListSerialPorts:   listPorts,
 		ShowConnect:       true,
 		OnConnect: func(n sessions.Node) {
-			h.node = n
+			// Redacted before it is kept, un-redacted for the dial
+			// itself. The retained node is re-seeded into this form
+			// on every subsequent open, and a password offered back
+			// for the rest of the session is not what anybody asked
+			// for -- it is also what SaveLaunches would be handed.
+			h.node = ui.RedactNode(n)
+			h.saveLaunches()
 			d.Hide()
 			h.connect(n)
 		},
@@ -599,6 +656,14 @@ func (h *host) buildMenu() {
 		fyne.NewMenuItem("Unlock / lock…", h.showVaultDialog),
 	)
 
+	// Options is where a tool that acts on FILES rather than on devices
+	// goes. Merge reads two maps off disk and writes a third; it dials
+	// nothing, so it does not belong beside the launchers in the toolbar,
+	// and it is not an import, so it does not belong in File.
+	optionsMenu := fyne.NewMenu("Options",
+		fyne.NewMenuItem("Merge topology maps…", h.mergeMaps),
+	)
+
 	// No Quit item: Fyne appends one to the first menu itself, and its
 	// action goes through the window's close intercept — so the applet
 	// teardown in SetCloseIntercept still runs. Adding one here would
@@ -609,7 +674,7 @@ func (h *host) buildMenu() {
 		fyne.NewMenuItemSeparator(),
 		fyne.NewMenuItem("About "+ui.DefaultAppName+"…", h.showAbout),
 	)
-	h.win.SetMainMenu(fyne.NewMainMenu(file, vaultMenu, helpMenu))
+	h.win.SetMainMenu(fyne.NewMainMenu(file, optionsMenu, vaultMenu, helpMenu))
 }
 
 // pickFile opens a read picker filtered to one set of extensions and hands the
@@ -709,6 +774,107 @@ func mapFolderName(path string) string {
 		}
 	}
 	return base
+}
+
+// mergeMaps folds two or more topology maps into one.
+//
+// A crawl stops at a wall -- an ACL, a credential that does not work on the far
+// side -- so an estate behind two walls is two maps that overlap at the seam.
+// This is the fold. The judgment it makes is which nodes in one map are which
+// nodes in the other, and that judgment is put in front of the person
+// afterwards rather than assumed: see ui.ShowMergeReport.
+//
+// Reading, merging and writing all happen here rather than in the form, for
+// the same reason every other dialog in this application collects a struct and
+// returns: a form that did file IO could not be opened by anything else.
+func (h *host) mergeMaps() {
+	if h.lastMerge.BasePath == "" && h.lastCrawl.MapPath != "" {
+		h.lastMerge.BasePath = h.lastCrawl.MapPath
+	}
+	// The crawl's domain list is almost always the right strip list, since
+	// both maps came from crawls run with it. Offered, not imposed.
+	if len(h.lastMerge.Options.StripDomains) == 0 {
+		h.lastMerge.Options.StripDomains = h.lastCrawl.Params.Domains
+	}
+	if h.lastMerge.OutPath == "" {
+		dir := h.mapDir
+		if dir == "" && h.lastCrawl.MapPath != "" {
+			dir = filepath.Dir(h.lastCrawl.MapPath)
+		}
+		if dir != "" {
+			h.lastMerge.OutPath = filepath.Join(dir, "merged-map.json")
+		}
+	}
+
+	ui.ShowMapMergeDialog(h.win, h.lastMerge, func(l ui.MapMergeLaunch) {
+		h.lastMerge = l
+		h.saveLaunches()
+		h.runMapMerge(l)
+	})
+}
+
+// runMapMerge does the work the dialog collected.
+//
+// Every failure names the file it happened to. A merge is run on paths typed
+// or pasted by hand, and "unexpected end of JSON input" with no filename in it
+// is unactionable when three paths are on screen.
+func (h *host) runMapMerge(l ui.MapMergeLaunch) {
+	maps := make([]map[string]topo.MapNode, 0, len(l.IncomingPaths)+1)
+
+	for _, path := range append([]string{l.BasePath}, l.IncomingPaths...) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			dialog.ShowError(err, h.win)
+			return
+		}
+		// Sniff before parsing: a session YAML picked by mistake would
+		// otherwise fail as a JSON syntax error, which reads as a corrupt
+		// map rather than as the wrong file.
+		if f := sessions.Sniff(data); f != sessions.FormatMap {
+			dialog.ShowError(fmt.Errorf("%s is a %s, not a topology map",
+				filepath.Base(path), f), h.win)
+			return
+		}
+		var m map[string]topo.MapNode
+		if err := json.Unmarshal(data, &m); err != nil {
+			dialog.ShowError(fmt.Errorf("%s: %w", filepath.Base(path), err), h.win)
+			return
+		}
+		if len(m) == 0 {
+			dialog.ShowError(fmt.Errorf("%s contains no devices", filepath.Base(path)), h.win)
+			return
+		}
+		maps = append(maps, m)
+	}
+
+	merged, reports := topo.MergeAll(maps, l.Options)
+
+	out, err := topo.MarshalMap(merged)
+	if err != nil {
+		dialog.ShowError(err, h.win)
+		return
+	}
+	if dir := filepath.Dir(l.OutPath); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			dialog.ShowError(fmt.Errorf("create %s: %w", dir, err), h.win)
+			return
+		}
+	}
+	if err := os.WriteFile(l.OutPath, append(out, '\n'), 0o644); err != nil {
+		dialog.ShowError(fmt.Errorf("write %s: %w", l.OutPath, err), h.win)
+		return
+	}
+
+	h.mapDir = filepath.Dir(l.OutPath)
+	log.Printf("[merge] %s", strings.ReplaceAll(ui.FormatMergeReports(l.OutPath, reports), "\n", " | "))
+	ui.ShowMergeReport(h.win, l.OutPath, reports)
+
+	if l.OpenAfter {
+		h.openMap(mapweb.MapFile{
+			Path: l.OutPath,
+			Name: strings.TrimSuffix(filepath.Base(l.OutPath), filepath.Ext(l.OutPath)),
+		})
+	}
 }
 
 // askMapImport collects the folder name and the one decision a map import has.
@@ -997,6 +1163,7 @@ func (h *host) launchCrawl() {
 			l.Params.VaultPath = h.runVaultPath()
 		}
 		h.lastCrawl = l
+		h.saveLaunches()
 		h.startCrawl(l)
 	})
 }
@@ -1303,6 +1470,7 @@ func (h *host) launchSearch() {
 	}
 	ui.ShowSearchDialog(h.win, h.lastSearch, capturedial.KnownTypes(), func(l ui.SearchLaunch) {
 		h.lastSearch = l
+		h.saveLaunches()
 		h.startSearch(l)
 	})
 }
@@ -1472,6 +1640,7 @@ func (h *host) startSearch(l ui.SearchLaunch) {
 		// one, and run it here instead of opening another tab.
 		ui.ShowSearchDialog(h.win, last, capturedial.KnownTypes(), func(next ui.SearchLaunch) {
 			h.lastSearch = next
+			h.saveLaunches()
 			start(next)
 		})
 	})
@@ -1524,6 +1693,7 @@ func (h *host) launchCapture() {
 			l.Params.VaultPath = h.runVaultPath()
 		}
 		h.lastCapture = l
+		h.saveLaunches()
 		h.startCapture(l)
 	})
 }
@@ -1730,6 +1900,35 @@ func (h *host) hostPaths() []ui.AboutDetail {
 // flagWasSet reports whether a flag appeared on the command line, as opposed
 // to holding its default. flag has no other way to tell the two apart, and the
 // difference decides whether the command line overrides the settings file.
+// saveLaunches writes the current dialog values so the next run of the
+// application opens on them.
+//
+// Called from every launch callback rather than at shutdown, because the run
+// that is worth remembering is often the one that preceded a crash or a kill:
+// remembering it only on a clean quit would lose it in exactly the case where
+// retyping it is most irritating.
+//
+// A failure is logged and nothing else. This is a convenience -- the run the
+// person just asked for is already starting -- and an error dialog in front of
+// it, once per launch, would be worse than the lost seed list.
+//
+// SaveLaunches strips the secrets; nothing here has to remember to.
+func (h *host) saveLaunches() {
+	if h.launchesPath == "" {
+		return
+	}
+	err := ui.SaveLaunches(h.launchesPath, ui.LaunchState{
+		Crawl:        h.lastCrawl,
+		Capture:      h.lastCapture,
+		Search:       h.lastSearch,
+		Merge:        h.lastMerge,
+		QuickConnect: h.node,
+	})
+	if err != nil {
+		log.Printf("[launches] %v", err)
+	}
+}
+
 func flagWasSet(name string) bool {
 	found := false
 	flag.Visit(func(f *flag.Flag) {

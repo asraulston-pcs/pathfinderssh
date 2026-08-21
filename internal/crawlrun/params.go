@@ -135,13 +135,36 @@ func (p *Params) Normalize() {
 	p.Seeds = cleanList(p.Seeds, false)
 	p.Domains = cleanList(p.Domains, true)
 	p.AllowDomains = cleanList(p.AllowDomains, true)
-	p.Exclude = cleanList(p.Exclude, true)
+	p.Exclude = cleanPatterns(p.Exclude)
 	p.CredTags = cleanList(p.CredTags, false)
 	p.VaultPath = strings.TrimSpace(p.VaultPath)
 	p.KnownHostsPath = strings.TrimSpace(p.KnownHostsPath)
 	if p.HostKeys == "" {
 		p.HostKeys = HostKeyTOFU
 	}
+}
+
+// cleanPatterns is cleanList for exclude substrings: trimmed, lowercased and
+// deduped, but WITHOUT the leading-dot strip. That strip exists because a
+// domain suffix written ".lab.example" and one written "lab.example" are the
+// same intent. An exclude pattern is not a suffix — ".net" and "net" are
+// different substrings, and silently turning the first into the second makes
+// a narrow pattern match far more than the person wrote.
+func cleanPatterns(in []string) []string {
+	out := make([]string, 0, len(in))
+	seen := make(map[string]bool, len(in))
+	for _, v := range in {
+		v = strings.ToLower(strings.TrimSpace(v))
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func cleanList(in []string, lower bool) []string {
