@@ -62,6 +62,18 @@ type DeviceRow struct {
 	// Detail is why, for the states that have a why.
 	Detail string
 
+	// Descr and Caps are what the neighbor advertised about this device
+	// before anything dialed it: the LLDP or CDP system description and
+	// capability string. Empty for a seed, and for any device discovered on
+	// a run with the per-interface detail fallback disabled.
+	//
+	// This is the pre-dial evidence. Platform is the post-dial answer, and
+	// by the time it exists the credentials have already been offered — so
+	// on a run that is walking into a rack of servers, this column is the
+	// one that says so while there is still a run to cancel.
+	Descr string
+	Caps  string
+
 	Credential string
 	CredReason string
 
@@ -210,6 +222,16 @@ func (r *Run) Handle(ev Event) {
 		if ev.Platform != "" {
 			d.Platform = ev.Platform
 		}
+		// Never overwrite with empty. Most events carry no advertisement,
+		// and letting them blank the field would erase the description a
+		// moment after KindQueued set it — the column would flicker full
+		// on discovery and empty for the rest of the run.
+		if ev.Descr != "" {
+			d.Descr = ev.Descr
+		}
+		if ev.Caps != "" {
+			d.Caps = ev.Caps
+		}
 		if ev.Via != "" && d.Via == "" {
 			// First reporter wins. A device several neighbors see would
 			// otherwise flip between them on every run and turn the
@@ -345,6 +367,11 @@ func (r *Run) Sorted(column string, asc bool) []DeviceRow {
 		less = func(i, j int) bool { return rows[i].Neighbors < rows[j].Neighbors }
 	case "via":
 		less = func(i, j int) bool { return rows[i].Via < rows[j].Via }
+	case "descr":
+		// The tuning sort: identical advertisements cluster, so a rack of
+		// servers arrives as one block rather than scattered through the
+		// discovery order.
+		less = func(i, j int) bool { return rows[i].Descr < rows[j].Descr }
 	case "duration":
 		less = func(i, j int) bool { return rows[i].Duration() < rows[j].Duration() }
 	}

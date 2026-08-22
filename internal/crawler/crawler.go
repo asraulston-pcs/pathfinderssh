@@ -677,6 +677,19 @@ type item struct {
 	// parentage the jump-host wiring needs: a device discovered behind a
 	// bastion is reachable the way its parent was reachable.
 	parent string
+
+	// descr and caps are what the neighbor claim advertised about this
+	// target: the LLDP or CDP system description and capability string.
+	// Empty for a seed.
+	//
+	// They are carried rather than looked up because by the time the device
+	// is dialed the claim that produced it is several batches behind, and
+	// they are reported at admission rather than after the fingerprint
+	// because their whole value is being known BEFORE a credential is
+	// offered. The platform column already answers the same question
+	// afterwards.
+	descr string
+	caps  string
 }
 
 // admit resolves a reported target to the string that will actually be dialed,
@@ -746,6 +759,7 @@ func (c *Crawler) CrawlContext(ctx context.Context, seeds []string) []*topo.Devi
 			c.cfg.Emit.Send(crawlrun.Event{
 				Kind: crawlrun.KindQueued, Identity: it.identity,
 				Depth: it.depth, Via: it.parent,
+				Descr: it.descr, Caps: it.caps,
 			})
 		}
 
@@ -828,19 +842,25 @@ func (c *Crawler) CrawlContext(ctx context.Context, seeds []string) []*topo.Devi
 				if pat, excl := c.exclusionFor(t); excl {
 					c.cfg.Emit.Send(crawlrun.Event{Kind: crawlrun.KindNotDialed,
 						Identity: c.identity(t), Via: identity, Depth: depth + 1,
-						Detail: "matches exclude " + pat})
+						Detail: "matches exclude " + pat,
+						Descr:  n.RemoteDescr, Caps: n.Capabilities})
 					c.cfg.Log("crawl: %s matches exclude %q (from neighbor claim); mapped as leaf, not dialed", t, pat)
 					continue
 				}
 				if !c.dialAllowed(t) {
 					c.cfg.Emit.Send(crawlrun.Event{Kind: crawlrun.KindNotDialed,
 						Identity: t, Via: identity, Depth: depth + 1,
-						Detail: "outside allowed domains"})
+						Detail: "outside allowed domains",
+						Descr:  n.RemoteDescr, Caps: n.Capabilities})
 					c.cfg.Log("crawl: %s outside allowed domains; mapped as leaf, not dialed", t)
 					continue
 				}
-				if n, ok := c.admit(t, addr, depth+1, identity); ok {
-					next = append(next, n)
+				if it, ok := c.admit(t, addr, depth+1, identity); ok {
+					// Set here rather than inside admit: the advertisement
+					// belongs to the EDGE, and admit is also the seed path,
+					// where there is no edge and no advertisement.
+					it.descr, it.caps = n.RemoteDescr, n.Capabilities
+					next = append(next, it)
 				}
 			}
 		}
