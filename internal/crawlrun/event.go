@@ -129,6 +129,24 @@ type Event struct {
 	// Platform from the fingerprint.
 	Platform string
 
+	// Descr and Caps are the neighbor's own advertisement — the LLDP or CDP
+	// system description and capability string — carried from the claim that
+	// produced this target. Set on KindQueued and KindNotDialed; empty for a
+	// seed, which nothing advertised.
+	//
+	// These are the fields ShouldExclude actually matches on, which is the
+	// reason they travel. A run that dials a rack of servers says so in the
+	// description long before it says so in the platform: the fingerprint
+	// arrives after the credential ladder has already been walked, and the
+	// description arrives before anything is dialed at all.
+	//
+	// Caps is here as evidence, not as a filter. Servers routinely advertise
+	// Bridge and Router capability, so a capability bit is not a safe basis
+	// for deciding what to skip — but seeing it next to the description is
+	// what tells you why filtering on it would not have worked.
+	Descr string
+	Caps  string
+
 	// Credential and CredReason describe an auth outcome. CredReason is
 	// credres's own ranking word — pinned, promoted, or ranked — which is
 	// the difference between a warm cache and a ladder walk.

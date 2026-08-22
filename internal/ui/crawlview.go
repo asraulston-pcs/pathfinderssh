@@ -31,6 +31,7 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -54,6 +55,11 @@ var crawlColumns = []struct {
 	{"Device", "name", 220},
 	{"Depth", "depth", 60},
 	{"Platform", "platform", 120},
+	// Sits next to Platform on purpose: the two answer the same question at
+	// opposite ends of the credential ladder. Platform is what the device
+	// said once it let us in; Description is what its neighbor said about it
+	// before anything was dialed.
+	{"Description", "descr", 240},
 	{"State", "state", 100},
 	{"Cred", "cred", 140},
 	{"Try", "attempts", 50},
@@ -312,24 +318,37 @@ func (v *CrawlView) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
 		return
 	}
 	row, ok := v.rowAt(id.Row)
-	if !ok {
+	if !ok || id.Col < 0 || id.Col >= len(crawlColumns) {
 		l.SetText("")
 		return
 	}
 	l.TextStyle = fyne.TextStyle{}
-	switch id.Col {
-	case 0:
+
+	// Keyed off the column key rather than its position. The cases used to
+	// be a switch on id.Col, which made crawlColumns and this function a
+	// pair of parallel arrays: inserting a column silently shifted every
+	// case below it, and the failure showed up as data under the wrong
+	// heading rather than as a compile error.
+	switch crawlColumns[id.Col].key {
+	case "name":
 		l.SetText(row.Display())
-	case 1:
+	case "depth":
 		l.SetText(fmt.Sprint(row.Depth))
-	case 2:
+	case "platform":
 		l.SetText(row.Platform)
-	case 3:
+	case "descr":
+		l.SetText(advertisement(row))
+		// Italic because this is hearsay. Every other cell on the row is
+		// something the device itself said; this is what a NEIGHBOR said
+		// about it, and on the rows that matter most — the ones that were
+		// never dialed — it is the only evidence there is.
+		l.TextStyle = fyne.TextStyle{Italic: true}
+	case "state":
 		l.SetText(row.State.String())
 		// Not dialed is not a failure and must not read like one, or the
 		// distinction the counters draw gets undone by the styling.
 		l.TextStyle = fyne.TextStyle{Italic: row.State == crawlrun.StateNotDialed}
-	case 4:
+	case "cred":
 		if row.Credential == "" {
 			l.SetText("")
 		} else if row.CredReason != "" && row.CredReason != "pinned" {
@@ -337,7 +356,7 @@ func (v *CrawlView) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
 		} else {
 			l.SetText(row.Credential)
 		}
-	case 5:
+	case "attempts":
 		if row.Attempts > 1 {
 			// More than one rung means failed authentications were spent.
 			l.SetText(fmt.Sprintf("%d !", row.Attempts))
@@ -347,25 +366,54 @@ func (v *CrawlView) updateCell(id widget.TableCellID, o fyne.CanvasObject) {
 		} else {
 			l.SetText("")
 		}
-	case 6:
+	case "neighbors":
 		if row.Neighbors == 0 {
 			l.SetText("")
 		} else {
 			l.SetText(fmt.Sprintf("%d/%d", row.New, row.Neighbors))
 		}
-	case 7:
+	case "via":
 		// Blank for a seed, which is the honest answer: nothing reported it,
 		// you did.
 		l.SetText(row.Via)
-	case 8:
+	case "duration":
 		if d := row.Duration(); d > 0 {
 			l.SetText(d.Round(100 * time.Millisecond).String())
 		} else {
 			l.SetText("")
 		}
-	case 9:
+	case "detail":
 		l.SetText(row.Detail)
 	}
+}
+
+// advertisement renders what a neighbor claimed about a device before anything
+// dialed it.
+//
+// Capabilities are shown only when there is no description, and in brackets to
+// mark them as the weaker evidence. They are not a substitute: a Linux server
+// running bridging will advertise Bridge and Router capability quite happily,
+// so a row reading "[bridge router]" means the crawl learned almost nothing
+// about that device, which is worth seeing as such rather than dressed up as
+// an identification.
+func advertisement(row crawlrun.DeviceRow) string {
+	if row.Descr != "" {
+		return collapseSpace(row.Descr)
+	}
+	if row.Caps != "" {
+		return "[" + collapseSpace(row.Caps) + "]"
+	}
+	return ""
+}
+
+// collapseSpace flattens a description onto one line.
+//
+// LLDP system descriptions are frequently multi-line — a Junos box reports its
+// model, its release and its build date on separate lines — and a table cell
+// renders the newlines as nothing at all, so the words run together. This is
+// display only; the stored string keeps its shape.
+func collapseSpace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // redrawLoop coalesces change signals into a fixed refresh cadence.
