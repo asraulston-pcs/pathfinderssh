@@ -41,6 +41,7 @@ go.work.sum
 # not land in the repo. lab-map.json is the one committed fixture and is
 # re-added below.
 *-map.json
+*_test.json
 *.graphml
 maps/
 pf_maps/
