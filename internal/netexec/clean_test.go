@@ -141,10 +141,10 @@ func TestPromptDetection(t *testing.T) {
 		{"lab-r1>", true},
 		{"lab-r1(config)#", true},
 		{"user@lab-host:~$", true},
-		{"lab-fw1 %", false},                  // space before % — not a prompt tail
-		{"lab-sw2% ", true},                   // trailing space is fine
-		{"* Slot-1 lab-exos1.1 #", true},  // EXOS stack: "* " member marker
-		{"no star prefix here %", false},       // still rejected without the "* " marker
+		{"lab-fw1 %", false},             // space before % — not a prompt tail
+		{"lab-sw2% ", true},              // trailing space is fine
+		{"* Slot-1 lab-exos1.1 #", true}, // EXOS stack: "* " member marker
+		{"no star prefix here %", false}, // still rejected without the "* " marker
 		{"building configuration...", false},
 		{"", false},
 		{"output line\nlab-r1#", true},
