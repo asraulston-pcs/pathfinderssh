@@ -179,11 +179,21 @@ to have four separate silent failure modes.
 
 ## Scope
 
-**Supported platforms:** Cisco (IOS / IOS-XE / NX-OS), Arista EOS, Juniper
-Junos. Those three families cover the overwhelming majority of the enterprise
-and datacenter installed base, and they are exactly what is built and validated
-today. A missing platform is a good issue to open, and a parsing variant from
-gear I don't have is the single most useful thing anybody can send.
+**Supported platforms:** Cisco (IOS / IOS-XE / NX-OS), Arista EOS and Juniper
+Junos are validated daily against real gear — those three families cover the
+overwhelming majority of the enterprise and datacenter installed base, and they
+are what I run.
+
+ArubaOS-CX, ArubaOS-Switch (ProVision), HP/H3C Comware and ExtremeXOS were
+contributed by [Andrew Raulston](https://github.com/asraulston-pcs) 
+
+Fingerprinting also recognises Cisco ASA, Huawei VRP, MikroTik RouterOS and
+generic Linux hosts, without the full crawl and capture command set behind them
+yet.
+
+A missing platform is a good issue to open, and a parsing variant from gear I
+don't have is still the single most useful thing anybody can send — see
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 **Non-goals, stated plainly:**
 
