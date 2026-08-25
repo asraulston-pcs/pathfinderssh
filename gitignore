@@ -15,6 +15,7 @@ bin/
 /pfvault
 /reach
 /reachmaps
+/dist
 *.exe
 *.exe~
 *.dll
