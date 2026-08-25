@@ -96,12 +96,12 @@ func TestHPComwareParsesRealNeighborsWithManagementAddresses(t *testing.T) {
 
 	want := []map[string]string{
 		{
-			"LOCAL_INTERFACE": "GigabitEthernet1/0/47",
-			"CHASSIS_ID":      "0200-0000-5130",
+			"LOCAL_INTERFACE":  "GigabitEthernet1/0/47",
+			"CHASSIS_ID":       "0200-0000-5130",
 			"NEIGHBOR_PORT_ID": "35",
-			"NEIGHBOR_NAME":   "lab-sw01",
-			"CAPABILITIES":    "Bridge",
-			"MGMT_ADDRESS":    "192.0.2.74",
+			"NEIGHBOR_NAME":    "lab-sw01",
+			"CAPABILITIES":     "Bridge",
+			"MGMT_ADDRESS":     "192.0.2.74",
 		},
 		{
 			"LOCAL_INTERFACE":      "GigabitEthernet1/0/48",
