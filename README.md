@@ -6,6 +6,8 @@
 click to session — runs end to end against real gear, and there are binaries you
 can download.
 
+![](screenshots/slides.gif)
+
 ![PathfinderSSH — the session tree and a crawl running in one window](screenshots/crawl.png)
 
 ---
