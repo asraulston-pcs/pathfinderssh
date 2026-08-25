@@ -434,10 +434,37 @@ class TopologyViewer {
     const elements = [];
     const addedEdges = new Set();
     const nodeIds = new Set();
+    // ipToNodeId maps a discovered device's own management IP (from its
+    // node_details) back to the top-level key it was stored under.
+    //
+    // Needed because a peer reference and that same device's own
+    // top-level entry are keyed differently: a peer is keyed by the
+    // neighbor's chassis MAC (LLDP's own identity for it), while a
+    // top-level entry is keyed by whatever the crawler decided to call
+    // the device -- its resolved hostname, or its dial IP when no
+    // hostname was available. A device that is BOTH directly reached
+    // (its own top-level entry) AND reported as a neighbor by something
+    // else therefore appears under two different strings in this file.
+    // Without reconciling them, a MAC-keyed peer reference is never
+    // recognized as "the same device" as its IP- or hostname-keyed
+    // top-level entry, and the code below would draw a second, synthetic
+    // "Undiscovered" node and attach the real edge to THAT instead --
+    // leaving the real, already-discovered node visibly orphaned with no
+    // edges at all, even though the connection was fully captured.
+    //
+    // Matching on node_details.ip specifically mirrors internal/topo/
+    // merge.go's own identity rule for combining two map files ("two
+    // nodes with the same non-empty node_details.ip are the same
+    // device") -- the same reconciliation this project's Go side already
+    // does across files, just missing here within a single file.
+    const ipToNodeId = new Map();
 
     for (const [deviceName, deviceData] of Object.entries(data)) {
       const details = deviceData.node_details || {};
       nodeIds.add(deviceName);
+      if (details.ip) {
+        ipToNodeId.set(details.ip, deviceName);
+      }
 
       elements.push({
         group: 'nodes',
@@ -458,14 +485,26 @@ class TopologyViewer {
       const peers = deviceData.peers || {};
 
       for (const [peerName, peerData] of Object.entries(peers)) {
-        if (!nodeIds.has(peerName)) {
-          nodeIds.add(peerName);
+        // Resolve the peer to its real top-level node id where one
+        // exists (via the IP cross-reference above) rather than trusting
+        // peerName -- the neighbor's MAC -- to already be that id.
+        let targetId = peerName;
+        if (!nodeIds.has(targetId) && peerData.ip && ipToNodeId.has(peerData.ip)) {
+          targetId = ipToNodeId.get(peerData.ip);
+        }
+
+        if (!nodeIds.has(targetId)) {
+          nodeIds.add(targetId);
           elements.push({
             group: 'nodes',
             data: {
-              id: peerName,
-              label: peerName + ' ⚠',
-              ip: '', platform: 'Undiscovered',
+              id: targetId,
+              label: targetId + ' ⚠',
+              // A genuinely undiscovered peer can still carry an IP the
+              // neighbor reported even though nothing ever dialed it --
+              // show it rather than blanking it out, since it is real
+              // data the crawl actually found.
+              ip: peerData.ip || '', platform: 'Undiscovered',
               icon: this._getCachedIcon('undiscovered'),
               discovered: false,
               vendorColor: '#c23030',
@@ -474,7 +513,7 @@ class TopologyViewer {
           });
         }
 
-        const edgeId = [deviceName, peerName].sort().join('--');
+        const edgeId = [deviceName, targetId].sort().join('--');
         if (!addedEdges.has(edgeId)) {
           addedEdges.add(edgeId);
           // Every connection, one per line — not just the first. A bundle
@@ -487,7 +526,7 @@ class TopologyViewer {
           elements.push({
             group: 'edges',
             data: {
-              id: edgeId, source: deviceName, target: peerName, label,
+              id: edgeId, source: deviceName, target: targetId, label,
               // Carried so the style can thicken a bundle. At the zoom levels
               // where a whole fabric fits on screen the label is unreadable
               // and the line is all there is, so the count has to reach the
