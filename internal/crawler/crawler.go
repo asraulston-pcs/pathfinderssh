@@ -531,7 +531,13 @@ func (c *Crawler) crawlOne(ctx context.Context, it item) *topo.Device {
 	plan, ok := planFor(fp.Name)
 	if !ok {
 		// discovered but not crawlable (e.g. linux, unknown): keep as a
-		// mapped leaf with no neighbors.
+		// mapped leaf with no neighbors. NoNeighborPlan tells topo.Generate
+		// this device never had the chance to claim its own side of a link
+		// -- without it, the map's bidirectional-claim check silently drops
+		// the edge whoever DID discover this device already reported, since
+		// an empty Neighbors slice alone is indistinguishable from a device
+		// that ran collection and genuinely found nothing.
+		d.NoNeighborPlan = true
 		c.cfg.Emit.Send(crawlrun.Event{Kind: crawlrun.KindPlatform,
 			Identity: it.identity, Platform: fp.Name, Detail: "no neighbor plan; leaf"})
 		c.cfg.Log("crawl: %s platform %q has no neighbor plan; leaf", target, fp.Name)
@@ -699,10 +705,16 @@ type item struct {
 // after the claim, so a CGNAT address whose PTR resolved was claimed under the
 // address and dialed by name — two keys for one device the moment anything
 // downstream started caching on identity. Resolve, then claim, then dial.
+//
+// On a refused claim (already admitted by an earlier report), the returned
+// item still carries target/identity -- everything else is zero. This lets a
+// caller that tracks its own admitted items by identity (see the backfill
+// logic in CrawlContext) find the ALREADY-admitted one and enrich it, rather
+// than the second report's information being silently discarded outright.
 func (c *Crawler) admit(reported, addr string, depth int, parent string) (item, bool) {
 	target := c.resolveViaDomains(c.resolveName(reported))
 	if !c.tryClaim(target) {
-		return item{}, false
+		return item{target: target, identity: c.identity(target)}, false
 	}
 	return item{
 		target:   target,
@@ -800,6 +812,20 @@ func (c *Crawler) CrawlContext(ctx context.Context, seeds []string) []*topo.Devi
 		c.markExcluded(results)
 
 		var next []item
+		// admittedIdx backfills a missing address rather than losing it: two
+		// different devices in the SAME batch routinely both report the same
+		// downstream neighbor (a redundant core/distribution pair is the
+		// common shape), and whichever one's report tryClaim admits FIRST
+		// wins the claim outright. Without this, a first report that
+		// happened to carry no usable address (or a chassis MAC nextTarget
+		// already blanked) permanently loses out to a LATER report of the
+		// exact same device that had a real management address -- the
+		// address is silently discarded, the device is later dialed by name
+		// only, and on a network with no DNS for switch hostnames that dial
+		// can never succeed. Scoped to this one depth batch, because once an
+		// admitted item leaves `next` and gets dialed there is nothing left
+		// here to enrich before it matters for this run.
+		admittedIdx := map[string]int{}
 		for i, d := range results {
 			// Events key on the claim identity, never on Hostname. Hostname
 			// is the string dialed; identity is what the device was claimed
@@ -860,7 +886,19 @@ func (c *Crawler) CrawlContext(ctx context.Context, seeds []string) []*topo.Devi
 					// belongs to the EDGE, and admit is also the seed path,
 					// where there is no edge and no advertisement.
 					it.descr, it.caps = n.RemoteDescr, n.Capabilities
+					admittedIdx[it.identity] = len(next)
 					next = append(next, it)
+				} else if addr != "" {
+					// Refused: something else in this batch already claimed
+					// this identity. If that earlier claim is still sitting in
+					// `next` (not yet dialed) with no address of its own, this
+					// report's address is worth keeping even though its name
+					// lost the race -- see admittedIdx's comment above.
+					if idx, seen := admittedIdx[it.identity]; seen && next[idx].addr == "" {
+						next[idx].addr = addr
+						c.cfg.Log("crawl: %s: backfilled management address %s from a later neighbor report",
+							next[idx].target, addr)
+					}
 				}
 			}
 		}
