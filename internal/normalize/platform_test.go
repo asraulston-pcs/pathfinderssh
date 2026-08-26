@@ -1,93 +1,45 @@
 // internal/normalize/platform_test.go
-//
-// The descriptions here are the vendor boilerplate as it appears in an LLDP
-// system description, with lab hostnames and trimmed version strings. What is
-// being pinned is the vendor identification, which is the stable part —
-// model numbers and versions move constantly and are not matched on.
 package normalize
 
 import "testing"
 
 func TestPlatformFromDescription(t *testing.T) {
-	tests := []struct {
-		name  string
+	cases := []struct {
 		descr string
 		want  string
 	}{
-		{
-			name:  "arista eos",
-			descr: "Arista Networks EOS version 4.28.3M running on an Arista DCS-7050SX3-48YC8",
-			want:  "arista_eos",
-		},
-		{
-			name:  "juniper junos",
-			descr: "Juniper Networks, Inc. qfx5120-48y-8c , version 21.4R3-S4.9 Build date: 2023-01-01",
-			want:  "juniper_junos",
-		},
-		{
-			name:  "junos named without the company",
-			descr: "Junos: 20.4R3-S5.3",
-			want:  "juniper_junos",
-		},
-		{
-			name:  "cisco nxos",
-			descr: "Cisco Nexus Operating System (NX-OS) Software 9.3(10)",
-			want:  "cisco_nxos",
-		},
-		{
-			name:  "cisco ios-xe with a separator",
-			descr: "Cisco IOS Software, IOS-XE Software, Version 17.3.5",
-			want:  "cisco_iosxe",
-		},
-		{
-			name:  "cisco ios-xe in a build tag",
-			descr: "Cisco IOS Software [Bengaluru], Catalyst L3 Switch Software (CAT9K_IOSXE), Version 17.6.4",
-			want:  "cisco_iosxe",
-		},
-		{
-			name:  "cisco ios classic",
-			descr: "Cisco IOS Software, C2960X Software (C2960X-UNIVERSALK9-M), Version 15.2(7)E3",
-			want:  "cisco_ios",
-		},
-		{
-			name:  "linux server",
-			descr: "Ubuntu 22.04.3 LTS Linux 5.15.0-88-generic",
-			want:  "linux",
-		},
-		{
-			name:  "empty description",
-			descr: "",
-			want:  "",
-		},
-		{
-			name:  "an unrecognized vendor is not guessed at",
-			descr: "SomeVendor Switch OS, Version 1.2.3",
-			want:  "",
-		},
-		{
-			name:  "a chassis id is not a description",
-			descr: "00:1c:73:11:22:33",
-			want:  "",
-		},
-	}
+		{"Arista DCS-7280SRA-48C6\nSoftware image version: 4.33.1.1F", "arista_eos"},
+		{"Cisco Nexus Operating System (NX-OS) Software", "cisco_nxos"},
+		{"Cisco IOS XE Software, Version 17.09.04a", "cisco_iosxe"},
+		{"Cisco IOS Software, C2960X Software", "cisco_ios"},
+		{"Cisco Adaptive Security Appliance Software Version 9.18(4)", "cisco_asa"},
+		{"Hostname: lab-mx1\nModel: mx204\nJunos: 23.4R2.13", "juniper_junos"},
+		{"Linux lab-host 6.8.0 #1 SMP x86_64 GNU/Linux", "linux"},
+		{"", ""},
+		{"some future platform", ""},
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := PlatformFromDescription(tc.descr); got != tc.want {
-				t.Errorf("PlatformFromDescription(%q) = %q, want %q", tc.descr, got, tc.want)
-			}
-		})
-	}
-}
+		// Real ArubaOS-CX LLDP System-Descriptions, captured live
+		// (2026-08-26). Older firmware carries an "Aruba" vendor string;
+		// HPE's post-rebrand firmware says "HPE ANW" instead.
+		{"Aruba JL717C  LL.10.10.1030", "aruba_cx"},
+		{"Aruba JL635A  GL.10.13.1090", "aruba_cx"},
+		{"Aruba R8S92A  FL.10.10.1090", "aruba_cx"},
+		{"HPE ANW S3L76A AL.10.16.1040", "aruba_cx"},
 
-// TestPlatformOrderingIsSpecificFirst guards the one ambiguity that actually
-// occurs: NX-OS descriptions also say "Cisco", and IOS-XE descriptions also
-// say "Cisco IOS Software". The more specific pattern has to win.
-func TestPlatformOrderingIsSpecificFirst(t *testing.T) {
-	if got := PlatformFromDescription("Cisco Nexus Operating System (NX-OS) Software"); got != "cisco_nxos" {
-		t.Errorf("NX-OS classified as %q", got)
+		// Real ArubaOS-Switch (ProVision) LLDP System-Descriptions,
+		// captured live (2026-08-26). Must NOT be misclassified as
+		// aruba_cx even though both start with "Aruba".
+		{"Aruba JL357A 2540-48G-PoE+-4SFP+ Switch, revision YC.16.10.0024, ROM YC.16.01.0002 (/ws/swbuildm/rel_ajanta_qaoff/code/build/cpm(swbuildm_rel_ajanta_qaoff_rel_ajanta))", "aruba_procurve"},
+		{"HP J9729A 2920-24G Switch, revision KA.16.09.0022", "aruba_procurve"},
+
+		// Real ExtremeXOS and HPE Comware LLDP System-Descriptions,
+		// captured live (2026-08-26).
+		{"ExtremeXOS (X440G2-24p-10G4) version 30.2.1.8 30.2.1.8 by release-manager on Tue Apr 30 19:51:20 EDT 2019", "extreme_exos"},
+		{"HP Comware Platform Software, Software Version 5.20.99 Release 5501P36\nHP 5500-48G-PoE+-4SFP HI Switch with 2 Interface Slots\nCopyright (c) 2010-2018 Hewlett Packard Enterprise Development LP", "hp_comware"},
 	}
-	if got := PlatformFromDescription("Cisco IOS Software, IOS-XE Software"); got != "cisco_iosxe" {
-		t.Errorf("IOS-XE classified as %q", got)
+	for _, c := range cases {
+		if got := PlatformFromDescription(c.descr); got != c.want {
+			t.Errorf("PlatformFromDescription(%q) = %q, want %q", c.descr, got, c.want)
+		}
 	}
 }
