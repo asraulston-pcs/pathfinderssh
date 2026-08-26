@@ -133,12 +133,16 @@ var plans = map[string][]step{
 		{Command: "show lldp neighbors", Key: "lldp", Protocol: "lldp", EdgeSource: true,
 			ScrubToRows: true},
 	},
-	// The three plans below are new and, unlike the ones above, have not
-	// been run against real gear through this codebase's own test harness
-	// (no Go toolchain in the authoring environment) -- only against the
-	// TextFSM templates by hand. BestEffort is set unconditionally on all
-	// three so a template gap degrades to "no neighbors found" rather than
-	// aborting the device's crawl. See internal/tfsm/templates for the
+	// These three plans were new and, unlike the ones above, were not
+	// initially run against real gear through this codebase's own test
+	// harness (no Go toolchain in the authoring environment) -- only
+	// against the TextFSM templates by hand. BestEffort is set
+	// unconditionally on all three so a template gap degrades to "no
+	// neighbors found" rather than aborting the device's crawl -- which is
+	// exactly what happened to aruba_cx's template on a real 6300 stack
+	// (see aruba_cx_show_lldp_neighbor_info_detail.textfsm) before it was
+	// fixed and confirmed live (2026-08-26). aruba_procurve and
+	// extreme_exos remain unconfirmed; see internal/tfsm/templates for the
 	// per-template confidence notes.
 	"aruba_procurve": {
 		{Command: "show lldp info remote-device detail", Key: "lldp_detail", Protocol: "lldp", BestEffort: true, EdgeSource: true},
