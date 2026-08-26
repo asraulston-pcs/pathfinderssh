@@ -49,6 +49,14 @@ func TestClassifyVersions(t *testing.T) {
 		{2, "Cisco Adaptive Security Appliance Software Version 9.18(4)", "cisco_asa"},
 		{4, "ExtremeXOS (X440-G2-48p-10G4) version 22.7.2.4", "extreme_exos"},
 		{5, "ArubaOS-CX Version : XL.10.00.0002C-1-g1b84ef2", "aruba_cx"},
+		// Real `show system` output from an HPE 6300L (S3L76A), captured
+		// live (2026-08-26): HPE's post-rebrand firmware drops "Aruba"
+		// from the field label entirely -- "AOS-CX Version", not
+		// "ArubaOS-CX Version" -- and "Vendor : HPE ANW" where older
+		// builds said "Aruba Networks". Every device on this firmware
+		// line fingerprinted as "unknown" until the classifier's "Aruba"
+		// prefix was made optional.
+		{5, "Hostname               : AxleNewFlr2Stack1\nSystem Description     : AL.10.16.1040\n\nVendor                 : HPE ANW\nProduct Name           : S3L76A 6300L 48SR5 CL8 2L 2Y L2 Sw\nAOS-CX Version         : AL.10.16.1040", "aruba_cx"},
 		{6, "HP J9729A 2920-24G Switch, revision KA.16.09.0022", "aruba_procurve"},
 		// Real `show version` output from an ArubaOS-Switch 3810M,
 		// captured live (2026-08-21): no vendor name text anywhere,

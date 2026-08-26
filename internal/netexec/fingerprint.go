@@ -188,10 +188,21 @@ var probes = []probe{
 		// "ArubaOS-CX Version" field is unambiguous, whereas
 		// ArubaOS-CX's `show version` output (if any) is unconfirmed
 		// and risks colliding with the "Aruba" match just below.
+		//
+		// Confirmed live (2026-08-26) against a real 6300L (S3L76A)
+		// running AL.10.16.1040: the field label itself has changed to
+		// "AOS-CX Version" -- "Aruba" dropped entirely -- on HPE's
+		// newer post-rebrand firmware, alongside "Vendor : HPE ANW"
+		// where older builds said "Aruba Networks" or similar. Every
+		// device on this firmware line fingerprinted as "unknown"
+		// until the "Aruba" prefix was made optional here. `(?i)AOS-CX`
+		// alone is specific enough to stay unambiguous on this
+		// command's own output -- nothing else in this probe table
+		// classifies `show system` text.
 		paging:     "no page",
 		versionCmd: "show system",
 		classes: []versionClass{
-			{"aruba_cx", regexp.MustCompile(`(?i)ArubaOS-CX`)},
+			{"aruba_cx", regexp.MustCompile(`(?i)(?:Aruba)?OS-CX`)},
 		},
 	},
 	{

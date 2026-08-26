@@ -531,7 +531,13 @@ func (c *Crawler) crawlOne(ctx context.Context, it item) *topo.Device {
 	plan, ok := planFor(fp.Name)
 	if !ok {
 		// discovered but not crawlable (e.g. linux, unknown): keep as a
-		// mapped leaf with no neighbors.
+		// mapped leaf with no neighbors. NoNeighborPlan tells topo.Generate
+		// this device never had the chance to claim its own side of a link
+		// -- without it, the map's bidirectional-claim check silently drops
+		// the edge whoever DID discover this device already reported, since
+		// an empty Neighbors slice alone is indistinguishable from a device
+		// that ran collection and genuinely found nothing.
+		d.NoNeighborPlan = true
 		c.cfg.Emit.Send(crawlrun.Event{Kind: crawlrun.KindPlatform,
 			Identity: it.identity, Platform: fp.Name, Detail: "no neighbor plan; leaf"})
 		c.cfg.Log("crawl: %s platform %q has no neighbor plan; leaf", target, fp.Name)

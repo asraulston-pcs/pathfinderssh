@@ -56,6 +56,37 @@ func TestGenerateBidirectional(t *testing.T) {
 	}
 }
 
+// Regression coverage for a real-world case (diagnosed live, 2026-08-26)
+// bidirectional validation was never meant to catch: a device that was
+// reached and fingerprinted, but whose platform has no neighbor-collection
+// plan at all -- e.g. one that fingerprinted as "unknown". It can never
+// claim its own side of a link no matter how real the link is, which makes
+// it categorically different from lab-ghost above (a device that DID run
+// collection and simply never claimed the link back -- the actual case
+// bidirectional validation exists to be skeptical of). Without
+// NoNeighborPlan the two are indistinguishable from an empty Neighbors
+// slice alone, and a real edge the discovering device already reported gets
+// silently dropped.
+func TestGenerateTrustsClaimTowardPeerWithNoNeighborPlan(t *testing.T) {
+	core := &Device{
+		Hostname: "lab-core-1", SysName: "lab-core-1", IPAddress: "10.20.0.1",
+		Platform: "aruba_cx",
+		Neighbors: []Neighbor{
+			{LocalInterface: "1/1/1", RemoteDevice: "lab-leaf-unknown",
+				RemoteInterface: "1/1/48", Protocol: "lldp"},
+		},
+	}
+	leaf := &Device{ // reached, fingerprinted, but no plan for its platform
+		Hostname: "lab-leaf-unknown", SysName: "lab-leaf-unknown", IPAddress: "10.20.0.9",
+		Platform:       "unknown",
+		NoNeighborPlan: true,
+	}
+	m := Generate([]*Device{core, leaf}, Options{})
+	if _, ok := m["lab-core-1"].Peers["lab-leaf-unknown"]; !ok {
+		t.Error("claim toward a discovered peer with no neighbor plan was dropped")
+	}
+}
+
 func TestGenerateTrustUnidirectional(t *testing.T) {
 	m := Generate(labDevices(), Options{TrustUnidirectional: true})
 	if _, ok := m["lab-r1"].Peers["lab-ghost"]; !ok {

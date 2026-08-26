@@ -39,6 +39,20 @@ type Device struct {
 	Depth     int        `json:"depth"`
 	Failed    bool       `json:"failed,omitempty"`
 	FailedWhy string     `json:"failure_reason,omitempty"`
+
+	// NoNeighborPlan is set when this device's fingerprinted platform has no
+	// registered neighbor-collection plan (crawler.planFor returned false) --
+	// reached and identified, but never even attempted to report its own
+	// neighbors. Generate's bidirectional-claim check needs this: an empty
+	// Neighbors slice is otherwise indistinguishable from a device that DID
+	// run collection and genuinely found nothing, and those two cases need
+	// opposite treatment. A device that tried and found nothing is exactly
+	// the case bidirectional validation exists to be skeptical of (a stale
+	// claim the live device does not corroborate); a device that could
+	// never have tried is not evidence of anything, and treating it as
+	// unconfirmed only discards a real edge the other side genuinely
+	// claimed.
+	NoNeighborPlan bool `json:"no_neighbor_plan,omitempty"`
 }
 
 // Canonical returns the map key for a device: sys_name > hostname > ip.
@@ -125,6 +139,15 @@ func Generate(devices []*Device, opt Options) map[string]MapNode {
 		_, ok := discovered[normalize.ShortName(name)]
 		return ok
 	}
+	// couldNeverReciprocate reports whether name names a discovered device
+	// whose platform has no neighbor-collection plan -- see NoNeighborPlan.
+	couldNeverReciprocate := func(name string) bool {
+		d, ok := info[canon(name)]
+		if !ok {
+			d, ok = info[normalize.ShortName(name)]
+		}
+		return ok && d.NoNeighborPlan
+	}
 
 	// namesADevice reports whether s is the name of something already in this
 	// map. A port description is very often just the far-end hostname, which
@@ -201,6 +224,7 @@ func Generate(devices []*Device, opt Options) map[string]MapNode {
 			for _, c := range claims {
 				accept := opt.TrustUnidirectional ||
 					!wasDiscovered(c.peer) || // leaf: one-sided is all we get
+					couldNeverReciprocate(c.peer) || // reached, but no plan ever ran
 					hasReverse(dc, lif, c.peer, c.remoteIf)
 				if !accept {
 					continue
