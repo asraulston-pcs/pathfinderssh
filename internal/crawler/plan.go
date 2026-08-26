@@ -14,6 +14,7 @@
 package crawler
 
 import (
+	"net/netip"
 	"strings"
 
 	"github.com/scottpeterman/pathfinderssh/internal/normalize"
@@ -187,6 +188,55 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
+// primaryAddress picks one dialable address out of a management-address
+// field that turned out to hold more than one.
+//
+// Confirmed live (2026-08-26): a real ArubaOS-CX neighbor reported
+// "Neighbor Management-Address    : 10.237.0.39,fe80::3a10:f0ff:fecf:a500"
+// -- an IPv4 and an IPv6 link-local address joined by a bare comma on one
+// line, not the one-address-per-line shape every other capture this
+// codebase has seen used. Untouched, that whole string became RemoteIP
+// and then the literal dial target: net.JoinHostPort saw it as a single
+// hostname containing a comma, which is not resolvable by any DNS server
+// and fails exactly like a genuinely unregistered name does, just for a
+// completely different reason -- "dial tcp: lookup
+// 10.237.0.39,fe80::3a10:f0ff:fecf:a500: no such host" is what a caller
+// actually sees, indistinguishable from a real DNS miss without reading
+// the address itself.
+//
+// Deliberately narrow: only actually SPLITS on a comma when one is
+// present, and only trusts the split if at least one candidate parses as
+// a real address. Any other shape -- including the all802 case that
+// legitimately reports an address as six space-separated hex byte pairs,
+// see aruba_procurve_test.go -- has no comma in it at all and returns
+// completely unchanged. Prefers IPv4 for the same reason preferIPv4 in
+// neighboraddr.go does: this fleet's dial layer, jump bindings and
+// credential cache are all keyed on strings that are v4 here, and a v6
+// answer would key the same device twice.
+func primaryAddress(s string) string {
+	if !strings.Contains(s, ",") {
+		return s
+	}
+	var firstValid string
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		addr, err := netip.ParseAddr(part)
+		if err != nil {
+			continue
+		}
+		if addr.Is4() {
+			return part
+		}
+		if firstValid == "" {
+			firstValid = part
+		}
+	}
+	if firstValid != "" {
+		return firstValid
+	}
+	return s
+}
+
 // recordToNeighbor maps a parsed template record (field names vary a little
 // per template family) onto the topology model.
 func recordToNeighbor(rec map[string]string, protocol string) topo.Neighbor {
@@ -194,7 +244,7 @@ func recordToNeighbor(rec map[string]string, protocol string) topo.Neighbor {
 		LocalInterface:  firstNonEmpty(rec["LOCAL_INTERFACE"]),
 		RemoteDevice:    firstNonEmpty(rec["NEIGHBOR_NAME"], rec["SYSTEM_NAME"], rec["CHASSIS_ID"]),
 		RemoteInterface: firstNonEmpty(rec["NEIGHBOR_INTERFACE"], rec["NEIGHBOR_PORT_ID"], rec["PORT_ID"]),
-		RemoteIP:        firstNonEmpty(rec["MGMT_ADDRESS"], rec["REMOTE_IP"], rec["MANAGEMENT_IP"]),
+		RemoteIP:        primaryAddress(firstNonEmpty(rec["MGMT_ADDRESS"], rec["REMOTE_IP"], rec["MANAGEMENT_IP"])),
 		// CDP reports a platform directly; LLDP does not, and carries it as
 		// prose inside the system description instead. Without the fallback
 		// every LLDP-only device — which is every Arista and every Junos
