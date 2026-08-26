@@ -51,12 +51,11 @@ func TestArubaCXParsesAnEmptyManagementAddress(t *testing.T) {
 // against a real ArubaOS-CX 6300 stack: a neighbor's Mac-Phy/EEE block
 // ("Neighbor Mac-Phy details", "Neighbor Auto-neg Supported", "Neighbor
 // MAU type", "Neighbor EEE information", per-direction wake/echo times)
-// matched no rule in the template and fell into the trailing
-// `^.* -> Error` catch-all, aborting the parse for the WHOLE capture on
-// the first neighbor record -- a switch reporting 16 real LLDP
-// neighbors came back with zero. Device names/IPs below are genericized
-// from the real capture; the Mac-Phy/EEE block that triggered the bug
-// is reproduced verbatim.
+// matched no rule in the template and fell into the trailing catch-all,
+// aborting the parse for the WHOLE capture on the first neighbor record
+// -- a switch reporting 16 real LLDP neighbors came back with zero.
+// Device names/IPs below are genericized from the real capture; the
+// Mac-Phy/EEE block that triggered the bug is reproduced verbatim.
 const arubaCXMacPhyDetailBlock = `
 LLDP Neighbor Information
 =========================
@@ -150,5 +149,92 @@ func TestArubaCXParsesPastMacPhyDetailBlock(t *testing.T) {
 	}
 	if recs[1]["MGMT_ADDRESS"] != "10.0.0.32" {
 		t.Errorf("recs[1] MGMT_ADDRESS = %q, want %q", recs[1]["MGMT_ADDRESS"], "10.0.0.32")
+	}
+}
+
+// Regression coverage for a second, unrelated real parse failure hit
+// live (2026-08-26), same device, same capture: a Comware neighbor's
+// System-Description wraps onto two more lines with NO field-label
+// prefix at all -- unpredictable free text from whatever the far-end
+// device advertises, not a fixed pattern this template can special-case.
+// Those continuation lines matched no rule either and fell into the
+// same trailing catch-all, again aborting the whole parse. The neighbor
+// name is genericized from the real capture ("AXLE-VIDEO"); the
+// multi-line description text is reproduced verbatim since it is the
+// exact shape that broke the parser.
+const arubaCXMultilineDescriptionBlock = `
+Port                           : 1/1/17
+Neighbor Entries               : 1
+Neighbor Entries Deleted       : 2
+Neighbor Entries Dropped       : 0
+Neighbor Entries Aged-Out      : 2
+Neighbor System-Name           : lab-comware-1
+Neighbor System-Description    : HP Comware Platform Software, Software Version 5.20.99 Release 5501P36
+HP 5500-48G-PoE+-4SFP HI Switch with 2 Interface Slots
+Copyright (c) 2010-2018 Hewlett Packard Enterprise Development LP
+Neighbor Chassis-ID            : 78:48:59:57:70:c5
+Neighbor Management-Address    : 10.0.0.25
+Chassis Capabilities Available : Bridge, Router
+Chassis Capabilities Enabled   : Bridge, Router
+Neighbor Port-ID               : Ten-GigabitEthernet1/0/54
+Neighbor Port-Desc             : Ten-GigabitEthernet1/0/54 Interface
+Neighbor Port VLAN ID          : 236
+TTL                            : 120
+
+Neighbor Mac-Phy details
+Neighbor Auto-neg Supported    : true
+Neighbor Auto-Neg Enabled      : false
+Neighbor Auto-Neg Advertised   :
+Neighbor MAU type              : 10 GIGBASESR
+
+Neighbor EEE information       : DOT3
+Neighbor TX Wake time          : 0 us
+Neighbor RX Wake time          : 0 us
+Neighbor Fallback time         : 0 us
+Neighbor TX Echo time          : 0 us
+Neighbor RX Echo time          : 0 us
+
+--------------------------------------------------------------------------------
+
+Port                           : 1/1/19
+Neighbor Entries               : 1
+Neighbor Entries Deleted       : 2
+Neighbor Entries Dropped       : 0
+Neighbor Entries Aged-Out      : 2
+Neighbor System-Name           : lab-aruba-1
+Neighbor System-Description    : Aruba JL357A 2540-48G-PoE+-4SFP+ Switch, revision YC.16.10.0024
+Neighbor Chassis-ID            : 38:10:f0:cf:81:00
+Neighbor Management-Address    : 10.0.0.36
+Chassis Capabilities Available : Bridge, Router
+Chassis Capabilities Enabled   : Bridge
+Neighbor Port-ID               : 49
+Neighbor Port-Desc             : 49
+TTL                            : 120
+`
+
+func TestArubaCXParsesPastMultilineDescription(t *testing.T) {
+	recs, err := Parse("aruba_cx", "lldp_detail", arubaCXMultilineDescriptionBlock)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(recs) != 2 {
+		t.Fatalf("got %d records, want 2", len(recs))
+	}
+	if recs[0]["NEIGHBOR_NAME"] != "lab-comware-1" {
+		t.Errorf("recs[0] NEIGHBOR_NAME = %q, want %q", recs[0]["NEIGHBOR_NAME"], "lab-comware-1")
+	}
+	if recs[0]["LOCAL_INTERFACE"] != "1/1/17" {
+		t.Errorf("recs[0] LOCAL_INTERFACE = %q, want %q", recs[0]["LOCAL_INTERFACE"], "1/1/17")
+	}
+	if recs[0]["CHASSIS_ID"] != "78:48:59:57:70:c5" {
+		t.Errorf("recs[0] CHASSIS_ID = %q, want %q", recs[0]["CHASSIS_ID"], "78:48:59:57:70:c5")
+	}
+	// The record after the malformed one must survive intact -- proof the
+	// catch-all dropped the two stray lines instead of aborting the parse.
+	if recs[1]["NEIGHBOR_NAME"] != "lab-aruba-1" {
+		t.Errorf("recs[1] NEIGHBOR_NAME = %q, want %q", recs[1]["NEIGHBOR_NAME"], "lab-aruba-1")
+	}
+	if recs[1]["LOCAL_INTERFACE"] != "1/1/19" {
+		t.Errorf("recs[1] LOCAL_INTERFACE = %q, want %q", recs[1]["LOCAL_INTERFACE"], "1/1/19")
 	}
 }

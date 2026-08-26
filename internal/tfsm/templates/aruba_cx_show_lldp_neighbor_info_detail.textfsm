@@ -14,14 +14,32 @@ Value CAPABILITIES (.*)
 # "Neighbor Mac-Phy details", "Neighbor Auto-neg Supported",
 # "Neighbor MAU type", "Neighbor EEE information", per-direction wake
 # and echo times, etc. -- was falling through every specific rule
-# straight into the trailing `^.* -> Error` catch-all, which aborted
-# the ENTIRE parse on the first neighbor record and silently returned
-# zero neighbors for a switch that had sixteen. The generic
-# `^Neighbor\s` rule below soaks up that whole block (and any other
-# "Neighbor <field>" line this vendor adds in a future firmware) without
-# enumerating every sub-field by name; it sits after every rule that
-# captures a Value so those still win first, and before the Error
-# catch-all so nothing from this section reaches it.
+# straight into the trailing catch-all, which aborted the ENTIRE parse
+# on the first neighbor record and silently returned zero neighbors for
+# a switch that had sixteen. The generic `^Neighbor\s` rule below soaks
+# up that whole block (and any other "Neighbor <field>" line this vendor
+# adds in a future firmware) without enumerating every sub-field by
+# name; it sits after every rule that captures a Value so those still
+# win first.
+#
+# A second, unrelated gap hit the same way (confirmed live 2026-08-26
+# against a real capture with 17 neighbors): a Comware neighbor's
+# System-Description wraps onto multiple lines with NO field-label
+# prefix on the continuation lines at all --
+#   Neighbor System-Description    : HP Comware Platform Software, ...
+#   HP 5500-48G-PoE+-4SFP HI Switch with 2 Interface Slots
+#   Copyright (c) 2010-2018 Hewlett Packard Enterprise Development LP
+#   Neighbor Chassis-ID            : ...
+# -- so no fixed pattern can be added for it; it is unpredictable free
+# text from whatever the far-end device happens to advertise. Because
+# this platform is BestEffort (see internal/crawler/plan.go) and this
+# command's real-world output has now proven messy in two independent
+# ways neither anticipated up front, the trailing catch-all was changed
+# from erroring out (aborting the whole capture) to matching and
+# silently dropping the line instead: an unrecognized line loses at
+# most the extra field it was on, never the rest of the device's
+# neighbors. LOCAL_INTERFACE stays Required, so a record still cannot
+# be emitted without a real "Port :" line establishing it.
 #
 # Record boundary is the next "Port :" line rather than the trailing dash
 # separator, because the LAST block in a real capture has no trailing
@@ -52,4 +70,4 @@ Start
   ^Total\s+Neighbor\s+Entries
   ^\s*$$
   ^Neighbor\s
-  ^.* -> Error
+  ^.*
