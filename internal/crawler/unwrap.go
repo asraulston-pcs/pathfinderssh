@@ -41,6 +41,31 @@ var (
 	// trailerRe covers the lines Junos prints around a table: the routing
 	// engine context marker and an echoed CLI prompt.
 	trailerRe = regexp.MustCompile(`^(\{\S*\}|\S+@\S+>.*)$`)
+
+	// fieldLabelRe matches a "Label : value" line — the shape every field in
+	// ArubaOS-CX's (and Comware's) "show ... detail" output takes, e.g.
+	// "Neighbor Chassis-ID            : 00:11:22:aa:bb:11" or
+	// "Chassis Capabilities Available : Bridge, Router".
+	//
+	// Confirmed live (2026-08-26): this platform's System-Description field
+	// routinely runs 150+ characters on one logical line, long enough to
+	// trip wrapWidth's Signal 2 the same way a genuinely wrapped Junos row
+	// does. With no way to tell "long field value" from "wrapped row" apart,
+	// unwrapWrapped glued every following field line onto it with no
+	// separator -- Chassis-ID, Management-Address, and everything after,
+	// all the way to TTL, merged into one line. NEIGHBOR_DESCRIPTION's
+	// greedy capture swallowed the wreckage, and MGMT_ADDRESS -- the field
+	// nextTarget's dial-by-address fallback depends on -- was never its own
+	// line to match, so it silently came back empty. Short descriptions
+	// (every other platform sharing this LLDP command) never reached the
+	// width where the false trigger fires, which is why the failure
+	// correlated exactly with description length rather than platform.
+	//
+	// A line matching this is unambiguously the START of a new field, never
+	// the tail of one: Junos's own wrapped continuations are bare fragments
+	// (a hostname or interface-description tail) with no colon anywhere
+	// near the front, which is exactly what this pattern requires.
+	fieldLabelRe = regexp.MustCompile(`^\s*[A-Za-z][A-Za-z0-9 _/-]{0,40}:\s`)
 )
 
 // minWrapWidth is the narrowest column count worth believing. Nothing sane
@@ -133,7 +158,7 @@ func wrapWidth(lines []string) int {
 // CLI prints around the table.
 func isContinuation(l string) bool {
 	s := strings.TrimSpace(l)
-	return s != "" && !rowRe.MatchString(l) && !trailerRe.MatchString(s)
+	return s != "" && !rowRe.MatchString(l) && !trailerRe.MatchString(s) && !fieldLabelRe.MatchString(l)
 }
 
 // headerRe is the terse table's column header.
