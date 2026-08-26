@@ -82,6 +82,38 @@ func topoNeighbor(name, ip string) (n topo.Neighbor) {
 	return
 }
 
+// Regression coverage for a real bug hit live (2026-08-26): an ArubaOS-CX
+// neighbor reported its management address as an IPv4 and an IPv6
+// link-local address joined by a bare comma on one line (address
+// genericized below; the shape is what matters, not the exact value).
+// Untouched, the whole string became the literal dial target and failed
+// with a "no such host" lookup error indistinguishable from a genuine DNS
+// miss.
+func TestPrimaryAddressPicksIPv4FromACommaJoinedPair(t *testing.T) {
+	got := primaryAddress("10.0.0.99,fe80::dead:beef:cafe:1")
+	if got != "10.0.0.99" {
+		t.Errorf("primaryAddress = %q, want %q", got, "10.0.0.99")
+	}
+}
+
+func TestPrimaryAddressFallsBackToFirstValidWhenNoIPv4(t *testing.T) {
+	got := primaryAddress("fe80::1,fe80::2")
+	if got != "fe80::1" {
+		t.Errorf("primaryAddress = %q, want %q", got, "fe80::1")
+	}
+}
+
+// The all802 case (aruba_procurve_test.go): a management address reported
+// as six space-separated hex byte pairs has no comma in it at all and must
+// pass through completely unchanged, not be mistaken for a delimited list.
+func TestPrimaryAddressLeavesNonCommaValuesAlone(t *testing.T) {
+	for _, v := range []string{"02 00 00 00 51 20", "10.20.0.1", "", "not-an-address"} {
+		if got := primaryAddress(v); got != v {
+			t.Errorf("primaryAddress(%q) = %q, want unchanged", v, got)
+		}
+	}
+}
+
 func TestDialAllowedDomainCompletion(t *testing.T) {
 	c := New(Config{
 		AllowDomains: []string{"lab.example"},

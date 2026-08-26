@@ -39,18 +39,33 @@ import (
 // The second alternative exists for one specific known real-world shape:
 // ExtremeXOS on a stack prefixes its prompt with the active member marker,
 // e.g. "* Slot-1 lab-exos1.1 #" — a prompt built from multiple
-// space-separated words, which the single-token first alternative cannot
-// match at all.
+// space-separated words, which the first alternative alone cannot match
+// (it existed before the third alternative below, back when the first
+// alternative was a plain single non-whitespace token).
 //
-// This is deliberately anchored on the literal "* " marker rather than
-// "any line with a space before the terminal character": TestPromptDetection
-// already carries `{"lab-fw1 %", false}` for a real platform that emits a
-// non-prompt line shaped exactly like that, so "space before the terminal
-// char" is proven, not just suspected, to be an unsafe general signal.
-// Requiring the "* " prefix keeps the match narrow to the one shape it
-// exists for, rather than reopening the "mid-output line looks prompt-ish"
-// failure mode endsAtPrompt's single-line matching exists to avoid.
-const DefaultPromptRegex = `(?m)^(?:[^\s]{1,80}|\*\s.{1,77})[#>\$%]\s*$`
+// The first alternative now allows up to five space-separated words rather
+// than exactly one. Confirmed live (2026-08-26): a real customer's
+// ArubaOS-Switch stack is hostnamed with a literal space in it (a
+// closet-label name like "2540 MDf-6"), which produces the entirely
+// ordinary prompt "2540 MDf-6#" -- and a single-token requirement rejects
+// that just as completely as it would reject the ExtremeXOS shape, hanging
+// every session against it for the full connect timeout despite the
+// device answering correctly every time.
+//
+// This is still deliberately NOT "any line with a space before the
+// terminal character": TestPromptDetection carries `{"lab-fw1 %", false}`
+// and `{"no star prefix here %", false}` for real platforms that emit
+// non-prompt lines shaped exactly like that, so that signal alone stays
+// proven unsafe. What actually distinguishes a real multi-word prompt from
+// those is adjacency: in a genuine prompt the terminal character is glued
+// directly onto the last word with no space in between ("MDf-6#"), where
+// in both rejected cases the terminal character is its own separate,
+// space-delimited token ("...here %"). \S{1,80}(?:\s\S{1,80}){0,4}
+// requires exactly that adjacency -- the terminal character can only ever
+// follow non-space content -- so neither rejected case gains a path to
+// matching no matter how the word boundaries fall, while a hostname with a
+// handful of literal spaces in it now does.
+const DefaultPromptRegex = `(?m)^(?:\S{1,80}(?:\s\S{1,80}){0,4}|\*\s.{1,77})[#>\$%]\s*$`
 
 // DefaultMaxOutputBytes bounds one command's output. Sized to hold any
 // running-config comfortably and to refuse a show tech-support, because

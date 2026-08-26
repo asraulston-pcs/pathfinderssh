@@ -144,7 +144,9 @@ func TestPromptDetection(t *testing.T) {
 		{"lab-fw1 %", false},             // space before % — not a prompt tail
 		{"lab-sw2% ", true},              // trailing space is fine
 		{"* Slot-1 lab-exos1.1 #", true}, // EXOS stack: "* " member marker
-		{"no star prefix here %", false}, // still rejected without the "* " marker
+		{"no star prefix here %", false}, // still rejected: terminal char is its own token
+		{"2540 MDf-6#", true},            // real ArubaOS-Switch hostname with a literal space
+		{"HQ2 Second Floor IDF#", true},  // several space-separated words, still glued to #
 		{"building configuration...", false},
 		{"", false},
 		{"output line\nlab-r1#", true},

@@ -22,6 +22,18 @@ Value CAPABILITIES (.*)
 # dash separator, because the LAST block in a real capture has no trailing
 # separator before the stripped prompt — same idiom juniper_junos's detail
 # template already uses.
+#
+# Confirmed live (2026-08-26) against a real ArubaOS-Switch stack: several
+# neighbors' MED/PoE detail carries fields this template never saw when it
+# was built -- "Media Policy Vlan id   :150", "Power Requested        :25.0
+# W" -- and both fell into the trailing `^.* -> Error` catch-all, aborting
+# the ENTIRE parse for that device. Since this platform is BestEffort (see
+# plan.go) specifically because its real-world output keeps proving more
+# varied than any one capture anticipated, the catch-all was changed from
+# erroring out to matching and silently dropping the line, the same fix
+# aruba_cx's template needed for the same reason: an unrecognized line
+# should cost at most the field it was on, never the rest of the device's
+# neighbors.
 Start
   ^\s*Local\s+Port\s*:\s*\S+\s*$$ -> Continue.Record
   ^\s*Local\s+Port\s*:\s*${LOCAL_INTERFACE}\s*$$
@@ -49,4 +61,4 @@ Start
   ^-+\s*$$
   ^\s*LLDP\s+Remote\s+Device\s+Information\s+Detail\s*$$
   ^\s*$$
-  ^.* -> Error
+  ^.*

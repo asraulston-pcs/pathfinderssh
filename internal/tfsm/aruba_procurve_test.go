@@ -55,3 +55,86 @@ func TestArubaProcurveParsesAnAll802ManagementAddress(t *testing.T) {
 		t.Errorf("NEIGHBOR_NAME = %q, want %q", rec["NEIGHBOR_NAME"], "lab-exos1")
 	}
 }
+
+// Regression coverage for a real parse failure hit live (2026-08-26)
+// against a real ArubaOS-Switch stack: MED detail on some neighbors
+// carries fields this template never saw when it was built --
+// "Media Policy Vlan id   :150" is reproduced verbatim below; it and
+// "Power Requested        :25.0 W" (a real second failure seen the same
+// run) both fell into the trailing `^.* -> Error` catch-all and aborted
+// the parse for the WHOLE device. The record after the unrecognized line
+// must still parse -- that's the proof the catch-all drops rather than
+// aborts.
+const arubaProcurveUnknownMEDFieldsBlock = `
+  Local Port   : 1
+  ChassisType  : mac-address
+  ChassisId    : 001122-aabb01
+  PortType     : interface-name
+  PortId       : 1/1/52
+  SysName      : lab-flr2-stack1
+  System Descr : HPE ANW S3L76A  AL.10.16.1040
+  PortDescr    : LAG1
+  Pvid         : 5
+
+  System Capabilities Supported  : bridge, router
+  System Capabilities Enabled    : bridge, router
+
+  Remote Management Address
+     Type    : ipv4
+     Address : 10.0.0.110
+
+  MED Information Detail
+     Media Policy Vlan id   :150
+
+  Poe Plus Information Detail
+
+    Poe Device Type         : Type2 PSE
+    Power Source            : Unknown
+    Power Priority          : Unknown
+    Power Requested        :25.0 W
+    PD Requested Power Value   : 25.0 Watts
+    PSE Allocated Power Value  : 25.0 Watts
+
+--------------------------------------------------------------------------------
+
+  Local Port   : 2
+  ChassisType  : mac-address
+  ChassisId    : 001122-aabb02
+  PortType     : interface-name
+  PortId       : 6/1/52
+  SysName      : lab-flr2-stack2
+  System Descr : HPE ANW S3L76A  AL.10.16.1040
+  PortDescr    : LAG2
+  Pvid         : 5
+
+  System Capabilities Supported  : bridge, router
+  System Capabilities Enabled    : bridge, router
+
+  Remote Management Address
+     Type    : ipv4
+     Address : 10.0.0.111
+`
+
+func TestArubaProcurveParsesPastUnknownMEDFields(t *testing.T) {
+	recs, err := Parse("aruba_procurve", "lldp_detail", arubaProcurveUnknownMEDFieldsBlock)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(recs) != 2 {
+		t.Fatalf("got %d records, want 2", len(recs))
+	}
+	if recs[0]["NEIGHBOR_NAME"] != "lab-flr2-stack1" {
+		t.Errorf("recs[0] NEIGHBOR_NAME = %q, want %q", recs[0]["NEIGHBOR_NAME"], "lab-flr2-stack1")
+	}
+	if recs[0]["MGMT_ADDRESS"] != "10.0.0.110" {
+		t.Errorf("recs[0] MGMT_ADDRESS = %q, want %q", recs[0]["MGMT_ADDRESS"], "10.0.0.110")
+	}
+	// The record after the unrecognized MED/PoE lines must survive intact --
+	// proof the catch-all dropped the stray lines instead of aborting.
+	if recs[1]["NEIGHBOR_NAME"] != "lab-flr2-stack2" {
+		t.Errorf("recs[1] NEIGHBOR_NAME = %q, want %q", recs[1]["NEIGHBOR_NAME"], "lab-flr2-stack2")
+	}
+	if recs[1]["MGMT_ADDRESS"] != "10.0.0.111" {
+		t.Errorf("recs[1] MGMT_ADDRESS = %q, want %q", recs[1]["MGMT_ADDRESS"], "10.0.0.111")
+	}
+}
